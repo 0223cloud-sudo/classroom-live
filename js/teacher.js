@@ -153,30 +153,47 @@ async function startSession() {
   const lesson = lessons.find((l) => l.id === $("#st-lesson").value);
   if (!cls || !lesson) return;
   if (!(lesson.activities || []).length) return toast("這個課程還沒有任何頁面");
-  $("#btn-start").disabled = true;
-  const code = await newCode();
-  const first = lesson.activities[0];
-  await setDoc(doc(db, "sessions", code), {
-    code, active: true, createdAt: serverTimestamp(),
-    classId: cls.id, className: cls.name, lessonId: lesson.id, lessonTitle: lesson.title,
-    index: 0, total: lesson.activities.length, activity: stripActivity(first),
-    state: "answering", reveal: null, picked: [],
-    projection: { mode: "join", joined: 0 },
-  });
-  enterSession(code);
+  const btn = $("#btn-start");
+  btn.disabled = true; btn.textContent = "準備中…";
+  try {
+    const code = await newCode();
+    const session = {
+      code, active: true, createdAt: serverTimestamp(),
+      classId: cls.id, className: cls.name, lessonId: lesson.id, lessonTitle: lesson.title,
+      index: 0, total: lesson.activities.length, activity: stripActivity(lesson.activities[0]),
+      state: "answering", reveal: null, picked: [],
+      projection: { mode: "join", joined: 0 },
+    };
+    // 不等伺服器回應，畫面先進入上課（Firestore 會在背景完成寫入）
+    setDoc(doc(db, "sessions", code), session).catch((e) => toast("建立課堂失敗：" + (e.code || e.message)));
+    enterSession(code, session, lesson);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "開始上課";
+    toast("開始上課失敗：" + (e.code || e.message));
+  }
 }
 
-async function enterSession(code) {
+async function enterSession(code, presetSession, presetLesson) {
   leaveSession();
-  const s = await getDoc(doc(db, "sessions", code));
-  if (!s.exists()) return toast("找不到課堂");
+  $("#tab-live").innerHTML = `<div class="card center muted">進入課堂中…</div>`;
+  let session = presetSession;
+  if (!session) {
+    const s = await getDoc(doc(db, "sessions", code));
+    if (!s.exists()) { toast("找不到課堂"); return renderLive(); }
+    session = s.data();
+  }
   live.code = code;
-  live.session = s.data();
-  const ls = await getDoc(doc(db, "lessons", live.session.lessonId));
-  live.lesson = ls.exists() ? ls.data() : { title: live.session.lessonTitle, activities: [] };
-  const roster = await getDocs(query(collection(db, "profiles"), where("classId", "==", live.session.classId)));
-  live.roster = roster.docs.map((d) => ({ uid: d.id, ...d.data() }));
+  live.session = session;
+  const lessonP = presetLesson ? Promise.resolve(presetLesson)
+    : getDoc(doc(db, "lessons", session.lessonId)).then((ls) => ls.exists() ? ls.data() : null);
+  const rosterP = getDocs(query(collection(db, "profiles"), where("classId", "==", session.classId)));
+  live.lesson = (await lessonP) || { title: session.lessonTitle, activities: [] };
+  // 名單只用來顯示還沒加入的同學姓名，不必等它
+  rosterP.then((r) => { live.roster = r.docs.map((d) => ({ uid: d.id, ...d.data() })); renderLiveBody(); })
+    .catch(() => {});
+  live.roster = [];
   live.selected = [];
+  renderLiveBody();
   live.unsubs.push(onSnapshot(doc(db, "sessions", code), (d) => {
     if (!d.exists()) return;
     live.session = d.data();
