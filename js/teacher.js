@@ -171,12 +171,16 @@ async function renderLive() {
 
 async function startSession() {
   const cls = classes.find((c) => c.id === $("#st-class").value);
-  const lesson = lessons.find((l) => l.id === $("#st-lesson").value);
-  if (!cls || !lesson) return;
-  if (!(lesson.activities || []).length) return toast("這個課程還沒有任何頁面");
+  const lessonId = $("#st-lesson").value;
+  if (!cls || !lessonId) return;
   const btn = $("#btn-start");
   btn.disabled = true; btn.textContent = "準備中…";
   try {
+    // 用資料庫裡的最新版本上課（課程可能剛在別的裝置改過）
+    const snap = await getDoc(doc(db, "lessons", lessonId));
+    if (!snap.exists()) throw new Error("找不到這個課程");
+    const lesson = { id: lessonId, ...snap.data() };
+    if (!(lesson.activities || []).length) throw new Error("這個課程還沒有任何頁面");
     const code = await newCode();
     const session = {
       code, active: true, createdAt: serverTimestamp(),
@@ -615,6 +619,7 @@ function syncEmbed() {
 let editing = null; // { id, title, activities }
 
 function renderLessonList() {
+  stopEditWatch();
   const root = $("#tab-lessons");
   root.innerHTML = `<div class="card" style="max-width:820px">
     <div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">我的課程</h2>
@@ -631,14 +636,27 @@ function renderLessonList() {
   $("#btn-new-lesson").onclick = () => openEditor({ id: null, title: "新課程", activities: [] });
   $("#btn-import").onclick = importLesson;
   $("#btn-library").onclick = openLibrary;
-  root.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => {
-    const l = lessons.find((x) => x.id === b.dataset.edit);
-    openEditor(JSON.parse(JSON.stringify({ id: l.id, title: l.title, activities: l.activities || [] })));
+  root.querySelectorAll("[data-edit]").forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = "讀取中…";
+    try {
+      const snap = await getDoc(doc(db, "lessons", b.dataset.edit));
+      if (!snap.exists()) { toast("找不到這份課程，可能已被刪除"); return renderLessonList(); }
+      const l = snap.data();
+      openEditor({ id: snap.id, title: l.title, activities: l.activities || [], base: tsMillis(l.updatedAt) });
+    } catch (e) {
+      b.disabled = false; b.textContent = "編輯";
+      toast("讀取失敗：" + (e.code || e.message));
+    }
   });
-  root.querySelectorAll("[data-backup]").forEach((b) => b.onclick = () =>
-    downloadBackup(lessons.find((x) => x.id === b.dataset.backup)));
+  // 備份、複製都用資料庫裡的最新版本
+  const fresh = async (id) => { const snap = await getDoc(doc(db, "lessons", id)); return snap.exists() ? snap.data() : null; };
+  root.querySelectorAll("[data-backup]").forEach((b) => b.onclick = async () => {
+    const l = await fresh(b.dataset.backup);
+    if (l) downloadBackup(l); else toast("找不到這份課程");
+  });
   root.querySelectorAll("[data-copy]").forEach((b) => b.onclick = async () => {
-    const l = lessons.find((x) => x.id === b.dataset.copy);
+    const l = await fresh(b.dataset.copy);
+    if (!l) return toast("找不到這份課程");
     await addDoc(collection(db, "lessons"), { title: l.title + "（複本）", activities: l.activities || [], updatedAt: serverTimestamp() });
     await reloadData(); renderLessonList();
   });
@@ -720,7 +738,43 @@ function importLesson() {
   };
 }
 
-function openEditor(lesson) { editing = lesson; renderEditor(); }
+// ---- 防止互相覆蓋：記住打開時的版本，別處改了就提醒 ----
+let editWatch = null;
+const tsMillis = (ts) => (ts && ts.toMillis ? ts.toMillis() : 0);
+
+function stopEditWatch() { if (editWatch) { editWatch(); editWatch = null; } }
+
+function openEditor(lesson) {
+  stopEditWatch();
+  editing = lesson;
+  renderEditor();
+  if (!lesson.id) return;
+  editWatch = onSnapshot(doc(db, "lessons", lesson.id), (snap) => {
+    if (editing !== lesson || lesson.saving || snap.metadata.hasPendingWrites) return;
+    const changed = !snap.exists() || tsMillis(snap.data().updatedAt) !== lesson.base;
+    if (changed !== !!lesson.changedElsewhere) {
+      lesson.changedElsewhere = changed;
+      const bar = $("#ed-conflict");
+      if (bar) bar.classList.toggle("hidden", !changed);
+    }
+  });
+}
+
+// 儲存時發現衝突：讓老師決定
+function askConflict() {
+  return new Promise((resolve) => {
+    const m = modal(`<h2>⚠️ 這份課程在別的地方被修改過</h2>
+      <p>你打開編輯之後，這份課程被另一台裝置（或 Claude）改過了。</p>
+      <p class="muted small">如果直接儲存，另一邊的修改會被你現在的版本蓋掉。</p>
+      <div class="ctrl-grid" style="margin-top:12px">
+        <button class="btn" data-c="reload">載入最新版</button>
+        <button class="btn danger" data-c="force">仍然儲存</button>
+      </div>
+      <button class="btn ghost" style="margin-top:8px;width:100%" data-c="cancel">取消</button>
+      <p class="muted small" style="margin-top:10px">建議：先按「取消」，把你這次改的地方記下來，再按「載入最新版」重新修改。</p>`);
+    m.querySelectorAll("[data-c]").forEach((b) => b.onclick = () => { m.remove(); resolve(b.dataset.c); });
+  });
+}
 
 const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", multi: "複選題", match: "配合題", text: "簡答題" };
 
@@ -733,6 +787,7 @@ function renderEditor() {
         <button class="btn secondary sm" id="ed-export">匯出 JSON</button>
         <button class="btn sm" id="ed-save">儲存</button></div>
       <label class="field" style="margin-top:12px"><span>課程名稱</span><input type="text" id="ed-title" value="${esc(L.title)}"></label>
+      <div id="ed-conflict" class="status-bar bad ${L.changedElsewhere ? "" : "hidden"}">⚠️ 這份課程剛剛在別的地方被修改了。按「儲存」前請先確認，避免蓋掉對方的修改。</div>
     </div>
     <div id="ed-acts">${L.activities.map((a, i) => actEditor(a, i)).join("")}</div>
     <div class="card row">
@@ -746,7 +801,7 @@ function renderEditor() {
   loadImages(root);
 
   $("#ed-title").oninput = (e) => { L.title = e.target.value; };
-  $("#ed-back").onclick = () => { if (confirm("離開編輯？沒儲存的修改會不見。")) { editing = null; renderLessonList(); } };
+  $("#ed-back").onclick = () => { if (confirm("離開編輯？沒儲存的修改會不見。")) { stopEditWatch(); editing = null; renderLessonList(); } };
   $("#ed-save").onclick = saveLesson;
   $("#ed-export").onclick = () => {
     modal(`<h2>課程 JSON</h2><textarea style="min-height:300px;font-family:monospace;font-size:.8rem">${esc(JSON.stringify({ title: L.title, activities: L.activities }, null, 2))}</textarea>
@@ -888,11 +943,34 @@ async function saveLesson() {
   });
   const data = { title: L.title || "未命名課程", activities: acts, updatedAt: serverTimestamp() };
   try {
-    if (L.id) await setDoc(doc(db, "lessons", L.id), data);
-    else { const r = await addDoc(collection(db, "lessons"), data); L.id = r.id; }
+    if (L.id) {
+      const latest = await getDoc(doc(db, "lessons", L.id));
+      if (latest.exists() && tsMillis(latest.data().updatedAt) !== L.base) {
+        const choice = await askConflict();
+        if (choice === "cancel") return;
+        if (choice === "reload") {
+          const l = latest.data();
+          openEditor({ id: L.id, title: l.title, activities: l.activities || [], base: tsMillis(l.updatedAt) });
+          return toast("已載入最新版");
+        }
+      }
+      L.saving = true;
+      await setDoc(doc(db, "lessons", L.id), data);
+    } else {
+      L.saving = true;
+      const r = await addDoc(collection(db, "lessons"), data);
+      L.id = r.id;
+    }
+    // 記住剛存好的版本，之後別處再改才會提醒
+    const saved = await getDoc(doc(db, "lessons", L.id));
+    L.base = tsMillis(saved.data()?.updatedAt);
+    L.saving = false;
+    L.changedElsewhere = false;
+    $("#ed-conflict")?.classList.add("hidden");
+    if (!editWatch) openEditor(L);
     await reloadData();
     toast("已儲存 ✓");
-  } catch (e) { toast("儲存失敗：" + (e.code || e.message)); }
+  } catch (e) { L.saving = false; toast("儲存失敗：" + (e.code || e.message)); }
 }
 
 // =====================================================================
