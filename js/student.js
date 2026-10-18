@@ -6,7 +6,7 @@ import {
 import { ALLOW_SEAT_LOGIN } from "./config.js";
 import { initTextSize } from "./textsize.js";
 
-initTextSize("student", document.getElementById("textsize-mount"), 1.15);
+initTextSize("student", document.getElementById("textsize-mount"), { baseWidth: 1000, min: 1.15 });
 
 const views = ["v-loading", "v-login", "v-profile", "v-code", "v-activity"];
 function show(id) { views.forEach((v) => $("#" + v).classList.toggle("hidden", v !== id)); }

@@ -7,8 +7,8 @@ import {
 import { renderScreen } from "./projection.js";
 import { initTextSize } from "./textsize.js";
 
-// 大螢幕預設放大一點，iPad 也比原本大一號
-initTextSize("teacher", document.getElementById("textsize-mount"), screen.width >= 1600 ? 1.3 : 1.15);
+// 介面跟著視窗寬度自動放大，大螢幕不會縮在角落
+initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: 1.15 });
 
 // ---------- 共用 ----------
 function toast(msg) {
