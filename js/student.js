@@ -144,11 +144,11 @@ async function onSession() {
   const indexChanged = !renderKey || renderKey.split("|")[0] !== String(s.index);
   renderKey = key;
   if (indexChanged) {
-    mine = null; draft = { choice: null, text: "", match: [] };
+    mine = null; draft = { choice: null, text: "", match: [], multi: [] };
     const r = await getDoc(doc(db, "sessions", code, "responses", `${user.uid}_${s.index}`)).catch(() => null);
     if (r && r.exists()) {
       mine = r.data();
-      draft = { choice: mine.choice ?? null, text: mine.text || "", match: mine.match || [] };
+      draft = { choice: mine.choice ?? null, text: mine.text || "", match: mine.match || [], multi: mine.multi || [] };
     }
   }
   render();
@@ -164,7 +164,9 @@ function render() {
   const ans = revealed ? s.reveal?.answer : null;
   const hasOptions = a.type === "choice" && (a.options || []).length;
   const isMatch = a.type === "match";
-  const needText = a.type === "text" || ((a.type === "choice" || isMatch) && a.askReason);
+  const isMulti = a.type === "multi" && (a.options || []).length;
+  const correctSet = revealed ? s.reveal?.answers || [] : [];
+  const needText = a.type === "text" || ((a.type === "choice" || isMatch || a.type === "multi") && a.askReason);
 
   let html = `<div class="muted small">第 ${s.index + 1} / ${s.total} 頁</div>
     <div class="prompt">${esc(a.prompt)}</div>
@@ -183,6 +185,16 @@ function render() {
       if (revealed && ans === i) cls = "correct";
       else if (revealed && draft.choice === i && ans != null) cls = "wrong";
       return `<button class="opt ${cls}" data-i="${i}" ${open ? "" : "disabled"}><span class="letter">${LETTERS[i]}</span>${esc(o)}</button>`;
+    }).join("")}</div>`;
+  }
+  if (isMulti) {
+    html += `<div class="muted small" style="margin-top:10px">可以選很多個，點一下選取，再點一下取消</div>
+      <div class="options">${a.options.map((o, i) => {
+      const on = draft.multi.includes(i);
+      let cls = on ? "selected" : "";
+      if (revealed && correctSet.length) cls = correctSet.includes(i) ? "correct" : on ? "wrong" : "";
+      const tag = revealed && correctSet.includes(i) && !on ? `<span class="small" style="margin-left:auto">漏選</span>` : "";
+      return `<button class="opt ${cls}" data-mi="${i}" ${open ? "" : "disabled"}><span class="letter">${on ? "✓" : LETTERS[i]}</span>${esc(o)}${tag}</button>`;
     }).join("")}</div>`;
   }
   if (isMatch) {
@@ -212,6 +224,11 @@ function render() {
     if (hasOptions && ans != null) {
       html += mine?.choice === ans ? `<div class="status-bar ok">🎉 答對了！</div>`
             : `<div class="status-bar bad">正確答案是 ${LETTERS[ans]}. ${esc(a.options[ans])}</div>`;
+    } else if (isMulti && correctSet.length) {
+      const sel = mine?.multi || [];
+      const hits = sel.filter((i) => correctSet.includes(i)).length, wrong = sel.length - hits;
+      html += hits === correctSet.length && !wrong ? `<div class="status-bar ok">🎉 全部選對了！</div>`
+            : `<div class="status-bar bad">選對 ${hits} / ${correctSet.length} 個${wrong ? `，多選了 ${wrong} 個` : ""}（綠色是正確答案）</div>`;
     } else if (isMatch && (s.reveal?.pairs || []).length) {
       const pairs = s.reveal.pairs, ok = pairs.filter((p, i) => (mine?.match || [])[i] === p).length;
       html += ok === pairs.length ? `<div class="status-bar ok">🎉 全部配對正確！</div>`
@@ -228,6 +245,13 @@ function render() {
   card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
     draft.choice = Number(b.dataset.i);
     card.querySelectorAll(".opt").forEach((x) => x.classList.toggle("selected", x === b));
+  });
+  card.querySelectorAll("[data-mi]").forEach((b) => b.onclick = () => {
+    const i = Number(b.dataset.mi);
+    draft.multi = draft.multi.includes(i) ? draft.multi.filter((x) => x !== i) : [...draft.multi, i].sort((x, y) => x - y);
+    const on = draft.multi.includes(i);
+    b.classList.toggle("selected", on);
+    b.querySelector(".letter").textContent = on ? "✓" : LETTERS[i];
   });
   card.querySelectorAll("select[data-m]").forEach((sel) => sel.onchange = () => {
     draft.match[Number(sel.dataset.m)] = sel.value;
@@ -246,12 +270,15 @@ async function submit(hasOptions, needText) {
   const s = session;
   if (hasOptions && draft.choice == null) return toast("請先選一個答案");
   const isMatch = s.activity.type === "match";
+  const isMulti = s.activity.type === "multi";
+  if (isMulti && !draft.multi.length) return toast("請至少選一個");
   if (isMatch && (s.activity.left || []).some((_, i) => !draft.match[i])) return toast("每一個都要配對喔");
   if (needText && !draft.text.trim()) return toast(s.activity.type === "text" ? "請寫下你的答案" : "請寫下你的判斷理由");
   const data = {
     uid: user.uid, index: s.index, seat: profile.seat, name: profile.name,
     choice: hasOptions ? draft.choice : null, text: needText ? draft.text.trim() : "",
     ...(isMatch ? { match: (s.activity.left || []).map((_, i) => draft.match[i] || "") } : {}),
+    ...(isMulti ? { multi: [...draft.multi] } : {}),
     at: serverTimestamp(),
   };
   const btn = $("#btn-submit"); btn.disabled = true;

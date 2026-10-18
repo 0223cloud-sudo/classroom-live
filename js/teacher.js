@@ -124,7 +124,7 @@ function shuffle(arr) {
 function stripActivity(a) {
   const s = {
     type: a.type, prompt: a.prompt || "", image: a.image || "",
-    options: a.type === "choice" ? (a.options || []) : [],
+    options: a.type === "choice" || a.type === "multi" ? (a.options || []) : [],
     askReason: !!a.askReason, reasonLabel: a.reasonLabel || "",
   };
   if (a.type === "match") {
@@ -269,8 +269,32 @@ async function endSession(code) {
 // 目前這一頁在課程裡的完整資料（含答案）
 function currentAct() { return live.lesson.activities[live.session.index] || {}; }
 
+// 複選題：選對幾個、選錯幾個（answers 是正確選項的位置）
+function multiScore(r) {
+  const answers = currentAct().answers || [], sel = r.multi || [];
+  return {
+    hits: sel.filter((i) => answers.includes(i)).length,
+    wrong: sel.filter((i) => !answers.includes(i)).length,
+    total: answers.length,
+  };
+}
+function isAnswerOpt(i) {
+  const a = currentAct();
+  return a.type === "multi" ? (a.answers || []).includes(i) : a.answer === i;
+}
+function multiHtml(r, showMissing = false) {
+  const a = live.session.activity, sel = r.multi || [];
+  let h = sel.map((i) => `<div><b>${LETTERS[i]}. ${esc(a.options[i])}</b>${safe ? "" : isAnswerOpt(i) ? " ✅" : " ❌"}</div>`).join("");
+  if (showMissing && !safe) {
+    const miss = (currentAct().answers || []).filter((i) => !sel.includes(i));
+    if (miss.length) h += `<div class="small muted">漏選：${miss.map((i) => `${LETTERS[i]}. ${esc(a.options[i])}`).join("、")}</div>`;
+  }
+  return h;
+}
+
 function isCorrect(r) {
   const a = currentAct();
+  if (a.type === "multi") { const sc = multiScore(r); return sc.total ? sc.hits === sc.total && sc.wrong === 0 : null; }
   if (a.type === "match") { const sc = matchScore(r); return sc.total ? sc.ok === sc.total : null; }
   if (a.type !== "choice" || a.answer == null || r.choice == null) return null;
   return r.choice === a.answer;
@@ -283,6 +307,7 @@ function chartCounts() {
     const right = currentAct().right || [];
     return (a.left || []).map((_, i) => live.responses.filter((r) => matchPicks(r)[i] === right[i]).length);
   }
+  if (a.type === "multi") return (a.options || []).map((_, i) => live.responses.filter((r) => (r.multi || []).includes(i)).length);
   return (a.options || []).map((_, i) => live.responses.filter((r) => r.choice === i).length);
 }
 
@@ -327,6 +352,7 @@ function setProjection(mode) {
       .map((r, i) => ({
         label: LETTERS[i], choice: r.choice ?? null, text: r.text || "",
         ...(s.activity.type === "match" ? { pairs: matchPicks(r) } : {}),
+        ...(s.activity.type === "multi" ? { multi: r.multi || [] } : {}),
       }));
     if (!proj.items.length) return toast("請先在座位表或答案列表點選要投影的答案");
   }
@@ -349,6 +375,7 @@ function setState(state) {
     const a = currentAct();
     patch.reveal = { answer: a.type === "choice" && a.answer != null ? a.answer : null, explanation: a.explanation || "" };
     if (a.type === "match") patch.reveal.pairs = (a.right || []).slice(0, (a.left || []).length);
+    if (a.type === "multi") patch.reveal.answers = a.answers || [];
     if (!["chart", "answers"].includes(live.session.projection?.mode)) patch.projection = { mode: "question" };
   } else {
     patch.reveal = null;
@@ -388,6 +415,7 @@ function detail(seat) {
   modal(`<h2>${seat} 號 ${esc(m?.name || live.roster.find((x) => x.seat === seat)?.name || "")}</h2>
     ${!m ? `<p class="muted">還沒有加入這堂課</p>` : !r ? `<p class="muted">已加入，這一頁還沒作答</p>` : `
       ${a.type === "match" ? `<div style="margin-bottom:10px">${pairsHtml(r)}</div>` : ""}
+      ${a.type === "multi" ? `<div style="margin-bottom:10px">${multiHtml(r, true)}</div>` : ""}
       ${r.choice != null ? `<p><b>${LETTERS[r.choice]}. ${esc(a.options[r.choice])}</b>
         ${isCorrect(r) === true ? `<span class="tag ok">對</span>` : isCorrect(r) === false ? `<span class="tag bad">錯</span>` : ""}</p>` : ""}
       ${r.text ? `<p style="white-space:pre-wrap">${esc(r.text)}</p>` : ""}`}
@@ -424,6 +452,11 @@ function renderLiveBody() {
           if (sc.ok > 0 && sc.ok < sc.total) cls = "partial";
           score = `${sc.ok}/${sc.total}`;
         }
+        if (!safe && a.type === "multi" && multiScore(r).total) {
+          const sc = multiScore(r);
+          if (!ok && sc.hits > 0) cls = "partial";
+          score = `對${sc.hits}/${sc.total}${sc.wrong ? ` 錯${sc.wrong}` : ""}`;
+        }
         if (live.selected.includes(m.uid)) cls += " selected";
       }
       if ((s.picked || []).includes(m.uid)) cls += " picked";
@@ -440,6 +473,7 @@ function renderLiveBody() {
       <div class="meta">${sel >= 0 ? `<b>想法 ${LETTERS[sel]}</b>　` : ""}${safe ? "" : `${r.seat} 號 ${esc(r.name)}`}
         ${!safe && ok === true ? `<span class="tag ok">對</span>` : ""}${!safe && ok === false ? `<span class="tag bad">錯</span>` : ""}</div>
       ${a.type === "match" ? pairsHtml(r) : ""}
+      ${a.type === "multi" ? multiHtml(r) : ""}
       ${r.choice != null ? `<div><b>${LETTERS[r.choice]}. ${esc(a.options[r.choice])}</b></div>` : ""}
       ${r.text ? `<div class="txt">${esc(r.text)}</div>` : ""}</div>`;
   }).join("");
@@ -447,8 +481,8 @@ function renderLiveBody() {
   // ---- 長條圖（老師自己看）----
   const counts = chartCounts();
   const maxC = Math.max(1, ...counts);
-  const bars = a.type === "choice" ? `<div class="bars" style="margin-top:12px">${(a.options || []).map((o, i) => `
-    <div class="bar-row"><b>${LETTERS[i]}</b><div><div class="bar ${!safe && act.answer === i ? "ok" : ""}" style="width:${counts[i] / maxC * 100}%"></div></div><span>${counts[i]}</span></div>`).join("")}</div>`
+  const bars = a.type === "choice" || a.type === "multi" ? `<div class="bars" style="margin-top:12px">${(a.options || []).map((o, i) => `
+    <div class="bar-row"><b>${LETTERS[i]}</b><div><div class="bar ${!safe && isAnswerOpt(i) ? "ok" : ""}" style="width:${counts[i] / maxC * 100}%"></div></div><span>${counts[i]}</span></div>`).join("")}</div>`
     : a.type === "match" && !safe ? `<div class="small muted" style="margin-top:12px">每一列答對人數</div><div class="bars">${(a.left || []).map((l, i) => `
     <div class="bar-row" style="grid-template-columns:5em 1fr 3em"><b>${esc(l)}</b><div><div class="bar ok" style="width:${counts[i] / Math.max(1, live.responses.length) * 100}%"></div></div><span>${counts[i]}/${live.responses.length}</span></div>`).join("")}</div>` : "";
 
@@ -471,7 +505,7 @@ function renderLiveBody() {
           <div class="prompt">${esc(a.prompt)}</div>
           ${a.image ? `<img data-img="${esc(a.image)}" alt="" style="margin-top:8px">` : ""}
           ${(a.options || []).length ? `<div class="small" style="margin-top:8px">${a.options.map((o, i) =>
-            `<span class="tag ${!safe && act.answer === i ? "ok" : ""}" style="margin:2px">${LETTERS[i]}. ${esc(o)}</span>`).join("")}</div>` : ""}
+            `<span class="tag ${!safe && isAnswerOpt(i) ? "ok" : ""}" style="margin:2px">${LETTERS[i]}. ${esc(o)}</span>`).join("")}</div>` : ""}
           ${a.type === "match" ? `<div class="small" style="margin-top:8px">${(a.left || []).map((l, i) =>
             `<span class="tag" style="margin:2px">${esc(l)}${safe ? "" : ` → ${esc((act.right || [])[i] || "")}`}</span>`).join("")}</div>` : ""}
         </div>
@@ -511,7 +545,7 @@ function renderLiveBody() {
           <div class="row">
             ${projBtn("join", "加入 QR")}
             ${projBtn("question", "題目")}
-            ${a.type === "choice" || a.type === "match" ? projBtn("chart", "統計圖") : ""}
+            ${["choice", "multi", "match"].includes(a.type) ? projBtn("chart", "統計圖") : ""}
             ${isQ ? projBtn("answers", `並排答案（${live.selected.length}）`) : ""}
             ${projBtn("blank", "遮蔽")}
           </div>
@@ -524,7 +558,7 @@ function renderLiveBody() {
           <h3>挑答案討論 <span class="muted small">（選了 ${live.selected.length} 份）</span></h3>
           <div class="row" style="margin-bottom:10px">
             <button class="btn secondary sm" id="btn-pick">🎲 隨機抽一位</button>
-            ${(a.type === "choice" && act.answer != null) || a.type === "match" ? `<button class="btn secondary sm" id="btn-pick-wrong">🎲 從答錯的抽</button>` : ""}
+            ${(a.type === "choice" && act.answer != null) || a.type === "match" || (a.type === "multi" && (act.answers || []).length) ? `<button class="btn secondary sm" id="btn-pick-wrong">🎲 從答錯的抽</button>` : ""}
             <button class="btn ghost sm" id="btn-clear-sel" ${live.selected.length ? "" : "disabled"}>清除選取</button>
           </div>
           <div class="answer-list">${ansList || `<p class="muted">還沒有人作答</p>`}</div>
@@ -688,7 +722,7 @@ function importLesson() {
 
 function openEditor(lesson) { editing = lesson; renderEditor(); }
 
-const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", match: "配合題", text: "簡答題" };
+const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", multi: "複選題", match: "配合題", text: "簡答題" };
 
 function renderEditor() {
   const root = $("#tab-lessons");
@@ -705,6 +739,7 @@ function renderEditor() {
       <span class="muted">新增一頁：</span>
       <button class="btn secondary sm" data-add="slide">＋ 投影片</button>
       <button class="btn secondary sm" data-add="choice">＋ 選擇題</button>
+      <button class="btn secondary sm" data-add="multi">＋ 複選題</button>
       <button class="btn secondary sm" data-add="match">＋ 配合題</button>
       <button class="btn secondary sm" data-add="text">＋ 簡答題</button>
     </div></div>`;
@@ -722,6 +757,7 @@ function renderEditor() {
     L.activities.push(t === "choice"
       ? { type: "choice", prompt: "", options: ["", "", "", ""], answer: null, askReason: true, explanation: "" }
       : t === "match" ? { type: "match", prompt: "", left: [], right: [], askReason: false, explanation: "" }
+      : t === "multi" ? { type: "multi", prompt: "", options: ["", "", "", "", "", ""], answers: [], askReason: false, explanation: "" }
       : t === "text" ? { type: "text", prompt: "", explanation: "" } : { type: "slide", prompt: "" });
     renderEditor();
     window.scrollTo(0, document.body.scrollHeight);
@@ -741,6 +777,7 @@ function renderEditor() {
           a.type = inp.value;
           if (a.type === "choice" && !a.options) a.options = ["", "", "", ""];
           if (a.type === "match" && !a.left) { a.left = []; a.right = []; }
+          if (a.type === "multi") { if (!a.options) a.options = ["", "", "", "", "", ""]; if (!a.answers) a.answers = []; }
           renderEditor();
         }
         else a[f] = inp.value;
@@ -748,8 +785,14 @@ function renderEditor() {
           // 選項改了，答案下拉選單跟著更新
           const sel = el.querySelector("[data-f=answer]");
           if (sel) sel.innerHTML = answerOptions(a);
+          const boxes = el.querySelector(".multi-answers");
+          if (boxes) boxes.innerHTML = multiAnswerBoxes(a);
         }
       });
+    });
+    el.addEventListener("change", (e) => {
+      if (!e.target.matches("[data-ans]")) return;
+      a.answers = [...el.querySelectorAll("[data-ans]:checked")].map((x) => Number(x.dataset.ans));
     });
     el.querySelector("[data-act=up]").onclick = () => { if (i > 0) { [L.activities[i - 1], L.activities[i]] = [L.activities[i], L.activities[i - 1]]; renderEditor(); } };
     el.querySelector("[data-act=down]").onclick = () => { if (i < L.activities.length - 1) { [L.activities[i + 1], L.activities[i]] = [L.activities[i], L.activities[i + 1]]; renderEditor(); } };
@@ -764,6 +807,11 @@ function renderEditor() {
     const rm = el.querySelector("[data-act=rmimg]");
     if (rm) rm.onclick = () => { a.image = ""; renderEditor(); };
   });
+}
+
+function multiAnswerBoxes(a) {
+  return (a.options || []).map((o, k) => o.trim() ? `<label class="row" style="gap:6px;margin:2px 10px 2px 0">
+    <input type="checkbox" data-ans="${k}" ${(a.answers || []).includes(k) ? "checked" : ""} style="width:22px;height:22px">${LETTERS[k]}. ${esc(o)}</label>` : "").join("");
 }
 
 function answerOptions(a) {
@@ -794,6 +842,11 @@ function actEditor(a, i) {
       <label class="field"><span>正確答案</span><select data-f="answer">${answerOptions(a)}</select></label>
       <label class="row" style="margin-bottom:10px"><input type="checkbox" data-f="askReason" ${a.askReason ? "checked" : ""} style="width:22px;height:22px">要學生寫理由</label>
       ${a.askReason ? `<label class="field"><span>理由欄的提示（可留空）</span><input type="text" data-f="reasonLabel" value="${esc(a.reasonLabel || "")}" placeholder="你是怎麼判斷的？"></label>` : ""}` : ""}
+    ${a.type === "multi" ? `
+      <label class="field"><span>選項（一行一個，最多 10 個）</span><textarea data-f="options" style="min-height:140px">${esc((a.options || []).join("\n"))}</textarea></label>
+      <div class="field"><span class="muted small">正確答案（可以勾很多個）</span><div class="row multi-answers">${multiAnswerBoxes(a)}</div></div>
+      <label class="row" style="margin-bottom:10px"><input type="checkbox" data-f="askReason" ${a.askReason ? "checked" : ""} style="width:22px;height:22px">要學生寫理由</label>
+      ${a.askReason ? `<label class="field"><span>理由欄的提示（可留空）</span><input type="text" data-f="reasonLabel" value="${esc(a.reasonLabel || "")}" placeholder="你是怎麼判斷的？"></label>` : ""}` : ""}
     ${a.type === "match" ? `
       <div class="row" style="align-items:flex-start">
         <label class="field grow"><span>左欄（一行一個）</span><textarea data-f="left" style="min-height:120px">${esc((a.left || []).join("\n"))}</textarea></label>
@@ -813,6 +866,14 @@ async function saveLesson() {
     if (a.type === "choice") {
       o.options = (a.options || []).map((x) => x.trim()).filter((x) => x !== "");
       o.answer = a.answer != null && a.answer < o.options.length ? a.answer : null;
+      o.askReason = !!a.askReason;
+      o.reasonLabel = a.reasonLabel || "";
+    }
+    if (a.type === "multi") {
+      // 去掉空白選項時，正確答案的位置要跟著調整
+      const kept = (a.options || []).map((x, k) => ({ x: x.trim(), k })).filter((o2) => o2.x).slice(0, 10);
+      o.options = kept.map((o2) => o2.x);
+      o.answers = kept.map((o2, n) => ((a.answers || []).includes(o2.k) ? n : -1)).filter((n) => n >= 0);
       o.askReason = !!a.askReason;
       o.reasonLabel = a.reasonLabel || "";
     }
