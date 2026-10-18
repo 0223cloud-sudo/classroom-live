@@ -530,10 +530,11 @@ function renderLessonList() {
     <div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">我的課程</h2>
       <button class="btn sm" id="btn-new-lesson">＋ 新增課程</button>
       <button class="btn secondary sm" id="btn-library">📚 課程庫</button>
-      <button class="btn ghost sm" id="btn-import">貼上 JSON</button></div>
+      <button class="btn ghost sm" id="btn-import">匯入／還原</button></div>
     ${lessons.length ? lessons.map((l) => `<div class="list-item">
       <div class="grow"><b>${esc(l.title)}</b> <span class="muted small">${(l.activities || []).length} 頁</span></div>
       <button class="btn secondary sm" data-edit="${l.id}">編輯</button>
+      <button class="btn ghost sm" data-backup="${l.id}">下載備份</button>
       <button class="btn ghost sm" data-copy="${l.id}">複製</button>
       <button class="btn danger sm" data-del="${l.id}">刪除</button></div>`).join("") : `<p class="muted">還沒有課程</p>`}
   </div>`;
@@ -544,6 +545,8 @@ function renderLessonList() {
     const l = lessons.find((x) => x.id === b.dataset.edit);
     openEditor(JSON.parse(JSON.stringify({ id: l.id, title: l.title, activities: l.activities || [] })));
   });
+  root.querySelectorAll("[data-backup]").forEach((b) => b.onclick = () =>
+    downloadBackup(lessons.find((x) => x.id === b.dataset.backup)));
   root.querySelectorAll("[data-copy]").forEach((b) => b.onclick = async () => {
     const l = lessons.find((x) => x.id === b.dataset.copy);
     await addDoc(collection(db, "lessons"), { title: l.title + "（複本）", activities: l.activities || [], updatedAt: serverTimestamp() });
@@ -557,9 +560,29 @@ function renderLessonList() {
   });
 }
 
-function importData(data) {
+// 備份檔把圖片一起包進去（data: 網址），還原時不怕原本的圖片被刪掉
+async function downloadBackup(l) {
+  toast("準備備份中…");
+  const activities = await Promise.all((l.activities || []).map(async (a) =>
+    a.image && a.image.startsWith("img:") ? { ...a, image: await resolveImage(a.image) } : a));
+  const blob = new Blob([JSON.stringify({ title: l.title, activities }, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${l.title}｜系統備份.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+}
+
+async function importData(data) {
   if (!Array.isArray(data.activities)) throw new Error("缺少 activities");
-  openEditor({ id: null, title: data.title || "匯入的課程", activities: data.activities });
+  const acts = data.activities;
+  if (acts.some((a) => a.image && a.image.startsWith("data:"))) {
+    toast("還原圖片中…");
+    for (const a of acts) {
+      if (a.image && a.image.startsWith("data:")) a.image = await uploadImage(await (await fetch(a.image)).blob());
+    }
+  }
+  openEditor({ id: null, title: data.title || "匯入的課程", activities: acts });
   toast("已匯入，確認後記得按「儲存」");
 }
 
@@ -576,23 +599,33 @@ async function openLibrary() {
     m.querySelectorAll("[data-lib]").forEach((b) => b.onclick = async () => {
       const data = await fetch("lessons/" + list[b.dataset.lib].file, { cache: "no-store" }).then((r) => r.json());
       m.remove();
-      importData(data);
+      importData(data).catch((e) => toast("匯入失敗：" + e.message));
     });
   } catch (e) { $("#lib-list", m).textContent = "讀取課程庫失敗：" + e.message; }
 }
 
 function importLesson() {
-  const m = modal(`<h2>匯入課程 JSON</h2>
-    <p class="muted small">把 Claude 幫你產生的課程內容整段貼進來。</p>
-    <textarea id="imp-text" style="min-height:240px;font-family:monospace;font-size:.85rem"></textarea>
+  const m = modal(`<h2>匯入課程</h2>
+    <p class="muted small">選擇備份檔（例如從雲端硬碟下載的「系統備份.json」）：</p>
+    <input type="file" accept=".json,application/json" id="imp-file">
+    <p class="muted small" style="margin-top:14px">或把 Claude 給你的課程內容整段貼進來：</p>
+    <textarea id="imp-text" style="min-height:180px;font-family:monospace;font-size:.85rem"></textarea>
     <div class="row" style="margin-top:10px"><button class="btn" id="imp-ok">匯入</button>
     <button class="btn ghost" id="imp-cancel">取消</button></div>`);
   $("#imp-cancel", m).onclick = () => m.remove();
+  $("#imp-file", m).onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      m.remove();
+      importData(data).catch((err) => toast("匯入失敗：" + err.message));
+    } catch (err) { toast("檔案格式不正確：" + err.message); }
+  };
   $("#imp-ok", m).onclick = () => {
     try {
       const data = JSON.parse($("#imp-text", m).value);
       m.remove();
-      importData(data);
+      importData(data).catch((e) => toast("匯入失敗：" + e.message));
     } catch (e) { toast("格式不正確：" + e.message); }
   };
 }

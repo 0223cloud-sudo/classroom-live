@@ -63,7 +63,7 @@ export async function uploadImage(file) {
     maxSide *= 0.8; quality -= 0.08;
   }
   const ref = await addDoc(collection(db, "images"), {
-    data: dataUrl, name: file.name, createdAt: serverTimestamp(),
+    data: dataUrl, name: file.name || "", createdAt: serverTimestamp(),
   });
   imageCache.set(ref.id, dataUrl);
   return "img:" + ref.id;
