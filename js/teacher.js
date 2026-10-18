@@ -17,7 +17,18 @@ function toast(msg) {
 }
 function show(id) { ["v-loading", "v-login", "v-app"].forEach((v) => $("#" + v).classList.toggle("hidden", v !== id)); }
 function loadImages(root) {
-  root.querySelectorAll("img[data-img]").forEach((img) => resolveImage(img.dataset.img).then((src) => { img.src = src; }));
+  root.querySelectorAll("img[data-img]").forEach((img) => {
+    resolveImage(img.dataset.img).then((src) => { img.src = src; });
+    img.onclick = () => showImage(img.src); // 點圖片看大圖
+  });
+}
+function showImage(src) {
+  if (!src) return;
+  const box = document.createElement("div");
+  box.className = "lightbox";
+  box.innerHTML = `<img src="${src}" alt="">`;
+  box.onclick = () => box.remove();
+  document.body.appendChild(box);
 }
 function modal(html) {
   const m = document.createElement("div");
