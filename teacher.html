@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="課堂控制台">
+  <title>課堂控制台</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body class="teacher">
+  <div id="v-loading" class="wrap"><div class="card center muted">載入中…</div></div>
+
+  <div id="v-login" class="wrap hidden">
+    <div class="card">
+      <h1>老師控制台</h1>
+      <p class="muted">請用老師的 Google 帳號登入。</p>
+      <button class="btn big" id="btn-login">用 Google 帳號登入</button>
+      <p class="status-bar bad hidden" id="login-err"></p>
+    </div>
+  </div>
+
+  <div id="v-app" class="hidden">
+    <div class="t-header" id="t-header">
+      <span class="title">課堂控制台</span>
+      <div class="tabs">
+        <button data-tab="live" class="active">上課</button>
+        <button data-tab="lessons">課程</button>
+        <button data-tab="classes">班級</button>
+      </div>
+      <span class="grow"></span>
+      <button class="btn ghost sm" id="btn-safe" title="iPad 鏡像投影時打開：隱藏姓名與對錯">🛡 鏡像安全模式：關</button>
+      <button class="btn ghost sm" id="btn-logout">登出</button>
+    </div>
+    <div class="t-main">
+      <section id="tab-live"></section>
+      <section id="tab-lessons" class="hidden"></section>
+      <section id="tab-classes" class="hidden"></section>
+    </div>
+  </div>
+
+  <div id="screen-embed" class="screen-embed hidden">
+    <div class="screen-root" id="embed-root"></div>
+    <button class="btn secondary sm exit" id="btn-embed-exit">回控制台</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script type="module" src="js/teacher.js"></script>
+</body>
+</html>

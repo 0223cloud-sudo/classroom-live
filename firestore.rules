@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    // 老師帳號名單（要和 js/config.js 的 TEACHER_EMAILS 一致）
+    function isTeacher() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in ['0223cloud@gmail.com'];
+    }
+    function session(code) {
+      return get(/databases/$(database)/documents/sessions/$(code)).data;
+    }
+
+    match /classes/{id} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+    }
+
+    match /lessons/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    match /images/{id} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+    }
+
+    match /profiles/{uid} {
+      allow read: if isTeacher() || (signedIn() && request.auth.uid == uid);
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.seat is int
+        && request.resource.data.seat >= 1 && request.resource.data.seat <= 60
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 20;
+      allow delete: if isTeacher();
+    }
+
+    match /sessions/{code} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+
+      match /members/{uid} {
+        allow read: if isTeacher() || (signedIn() && request.auth.uid == uid);
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && session(code).active == true;
+        allow delete: if isTeacher();
+      }
+
+      match /responses/{rid} {
+        allow read: if isTeacher() || (signedIn() && rid.matches(request.auth.uid + '_[0-9]+'));
+        // 學生只能在「作答中」寫自己這一題的答案
+        allow create, update: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && rid == request.auth.uid + '_' + string(request.resource.data.index)
+          && session(code).state == 'answering'
+          && session(code).index == request.resource.data.index
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 2000;
+        allow delete: if isTeacher();
+      }
+    }
+  }
+}

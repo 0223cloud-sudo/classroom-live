@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>投影畫面</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body class="screen">
+  <div class="screen-root" id="root">
+    <div class="screen-body s-blank"><div class="big">載入中…</div></div>
+  </div>
+  <div id="login" class="modal hidden" style="background:rgba(0,0,0,.25)">
+    <div class="card" style="font-size:18px">
+      <h2>投影畫面</h2>
+      <p class="muted">請用老師帳號登入，畫面會自動跟著目前的課堂。</p>
+      <button class="btn big" id="btn-login">用 Google 帳號登入</button>
+      <p class="status-bar bad hidden" id="err"></p>
+    </div>
+  </div>
+  <script type="module">
+    import { auth, db, doc, collection, query, where, onSnapshot, onAuthStateChanged,
+      signInGoogle, isTeacher, signOut, $ } from "./js/firebase.js";
+    import { renderScreen } from "./js/projection.js";
+
+    // 網址可以帶 ?s=代碼；不帶的話自動跟著最新開始的課堂
+    const fixed = (new URLSearchParams(location.search).get("s") || "").toUpperCase();
+    let unsub = null;
+
+    $("#btn-login").onclick = () => signInGoogle().catch((e) => {
+      $("#err").textContent = "登入失敗：" + (e.code || e.message); $("#err").classList.remove("hidden");
+    });
+
+    onAuthStateChanged(auth, (u) => {
+      if (unsub) { unsub(); unsub = null; }
+      if (!u) { $("#login").classList.remove("hidden"); return; }
+      if (!isTeacher(u)) {
+        $("#err").textContent = "請用老師帳號登入"; $("#err").classList.remove("hidden");
+        signOut(auth); return;
+      }
+      $("#login").classList.add("hidden");
+      const q = query(collection(db, "sessions"), where("active", "==", true));
+      unsub = onSnapshot(q, (qs) => {
+        const all = qs.docs.map((d) => d.data());
+        const s = fixed ? all.find((x) => x.code === fixed)
+          : all.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))[0];
+        renderScreen($("#root"), s || null);
+      });
+    });
+  </script>
+</body>
+</html>
