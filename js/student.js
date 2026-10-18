@@ -80,7 +80,7 @@ $("#btn-save-profile").onclick = async () => {
   const seat = parseInt($("#pf-seat").value, 10);
   const name = $("#pf-name").value.trim();
   if (!classId) return err($("#pf-err"), "請選擇班級");
-  if (!(seat >= 1 && seat <= 60)) return err($("#pf-err"), "請填正確的座號");
+  if (!(seat >= 1 && seat <= 35)) return err($("#pf-err"), "座號請填 1～35");
   if (!name) return err($("#pf-err"), "請填姓名");
   profile = {
     classId, className: sel.options[sel.selectedIndex].text, seat, name,
