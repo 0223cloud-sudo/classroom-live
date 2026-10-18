@@ -512,7 +512,8 @@ function renderLessonList() {
   root.innerHTML = `<div class="card" style="max-width:820px">
     <div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">我的課程</h2>
       <button class="btn sm" id="btn-new-lesson">＋ 新增課程</button>
-      <button class="btn secondary sm" id="btn-import">匯入 JSON</button></div>
+      <button class="btn secondary sm" id="btn-library">📚 課程庫</button>
+      <button class="btn ghost sm" id="btn-import">貼上 JSON</button></div>
     ${lessons.length ? lessons.map((l) => `<div class="list-item">
       <div class="grow"><b>${esc(l.title)}</b> <span class="muted small">${(l.activities || []).length} 頁</span></div>
       <button class="btn secondary sm" data-edit="${l.id}">編輯</button>
@@ -521,6 +522,7 @@ function renderLessonList() {
   </div>`;
   $("#btn-new-lesson").onclick = () => openEditor({ id: null, title: "新課程", activities: [] });
   $("#btn-import").onclick = importLesson;
+  $("#btn-library").onclick = openLibrary;
   root.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => {
     const l = lessons.find((x) => x.id === b.dataset.edit);
     openEditor(JSON.parse(JSON.stringify({ id: l.id, title: l.title, activities: l.activities || [] })));
@@ -538,6 +540,30 @@ function renderLessonList() {
   });
 }
 
+function importData(data) {
+  if (!Array.isArray(data.activities)) throw new Error("缺少 activities");
+  openEditor({ id: null, title: data.title || "匯入的課程", activities: data.activities });
+  toast("已匯入，確認後記得按「儲存」");
+}
+
+// 課程庫：Claude 產生的課程放在 lessons/ 資料夾，列在 lessons/index.json
+async function openLibrary() {
+  const m = modal(`<h2>從課程庫匯入</h2><div id="lib-list" class="muted">載入中…</div>
+    <button class="btn ghost" style="margin-top:12px" id="lib-close">關閉</button>`);
+  $("#lib-close", m).onclick = () => m.remove();
+  try {
+    const list = await fetch("lessons/index.json", { cache: "no-store" }).then((r) => r.json());
+    $("#lib-list", m).innerHTML = list.map((l, i) => `<div class="list-item">
+      <div class="grow"><b>${esc(l.title)}</b><div class="small muted">${esc(l.note || "")}</div></div>
+      <button class="btn sm" data-lib="${i}">匯入</button></div>`).join("") || "課程庫是空的";
+    m.querySelectorAll("[data-lib]").forEach((b) => b.onclick = async () => {
+      const data = await fetch("lessons/" + list[b.dataset.lib].file, { cache: "no-store" }).then((r) => r.json());
+      m.remove();
+      importData(data);
+    });
+  } catch (e) { $("#lib-list", m).textContent = "讀取課程庫失敗：" + e.message; }
+}
+
 function importLesson() {
   const m = modal(`<h2>匯入課程 JSON</h2>
     <p class="muted small">把 Claude 幫你產生的課程內容整段貼進來。</p>
@@ -548,10 +574,8 @@ function importLesson() {
   $("#imp-ok", m).onclick = () => {
     try {
       const data = JSON.parse($("#imp-text", m).value);
-      if (!Array.isArray(data.activities)) throw new Error("缺少 activities");
       m.remove();
-      openEditor({ id: null, title: data.title || "匯入的課程", activities: data.activities });
-      toast("已匯入，確認後記得按「儲存」");
+      importData(data);
     } catch (e) { toast("格式不正確：" + e.message); }
   };
 }
