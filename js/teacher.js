@@ -342,7 +342,7 @@ function renderLiveBody() {
   // ---- 座位表 ----
   const bySeat = new Map(live.members.map((m) => [m.seat, m]));
   const respByUid = new Map(live.responses.map((r) => [r.uid, r]));
-  const maxSeat = Math.max(30, ...live.members.map((m) => m.seat), ...live.roster.map((r) => r.seat));
+  const maxSeat = Math.max(35, ...live.members.map((m) => m.seat), ...live.roster.map((r) => r.seat));
   let cells = "";
   const missing = [];
   for (let n = 1; n <= maxSeat; n++) {
