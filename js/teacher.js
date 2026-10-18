@@ -744,6 +744,14 @@ const tsMillis = (ts) => (ts && ts.toMillis ? ts.toMillis() : 0);
 
 function stopEditWatch() { if (editWatch) { editWatch(); editWatch = null; } }
 
+// 比較內容用：欄位順序不同也視為相同
+function stableStr(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStr).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableStr(v[k])}`).join(",")}}`;
+  return JSON.stringify(v ?? null);
+}
+const contentOf = (d) => ({ title: d.title, activities: d.activities || [] });
+
 function openEditor(lesson) {
   stopEditWatch();
   editing = lesson;
@@ -751,7 +759,12 @@ function openEditor(lesson) {
   if (!lesson.id) return;
   editWatch = onSnapshot(doc(db, "lessons", lesson.id), (snap) => {
     if (editing !== lesson || lesson.saving || snap.metadata.hasPendingWrites) return;
-    const changed = !snap.exists() || tsMillis(snap.data().updatedAt) !== lesson.base;
+    let changed = !snap.exists() || tsMillis(snap.data().updatedAt) !== lesson.base;
+    // 是自己剛存的內容（時間戳晚一步才到），就當成新的基準，不算別人改的
+    if (changed && snap.exists() && lesson.lastSaved && stableStr(contentOf(snap.data())) === lesson.lastSaved) {
+      lesson.base = tsMillis(snap.data().updatedAt);
+      changed = false;
+    }
     if (changed !== !!lesson.changedElsewhere) {
       lesson.changedElsewhere = changed;
       const bar = $("#ed-conflict");
@@ -962,6 +975,7 @@ async function saveLesson() {
       L.id = r.id;
     }
     // 記住剛存好的版本，之後別處再改才會提醒
+    L.lastSaved = stableStr(contentOf(data));
     const saved = await getDoc(doc(db, "lessons", L.id));
     L.base = tsMillis(saved.data()?.updatedAt);
     L.saving = false;
