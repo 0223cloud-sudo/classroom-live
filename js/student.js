@@ -144,11 +144,11 @@ async function onSession() {
   const indexChanged = !renderKey || renderKey.split("|")[0] !== String(s.index);
   renderKey = key;
   if (indexChanged) {
-    mine = null; draft = { choice: null, text: "" };
+    mine = null; draft = { choice: null, text: "", match: [] };
     const r = await getDoc(doc(db, "sessions", code, "responses", `${user.uid}_${s.index}`)).catch(() => null);
     if (r && r.exists()) {
       mine = r.data();
-      draft = { choice: mine.choice ?? null, text: mine.text || "" };
+      draft = { choice: mine.choice ?? null, text: mine.text || "", match: mine.match || [] };
     }
   }
   render();
@@ -163,7 +163,8 @@ function render() {
   const revealed = s.state === "revealed";
   const ans = revealed ? s.reveal?.answer : null;
   const hasOptions = a.type === "choice" && (a.options || []).length;
-  const needText = a.type === "text" || (a.type === "choice" && a.askReason);
+  const isMatch = a.type === "match";
+  const needText = a.type === "text" || ((a.type === "choice" || isMatch) && a.askReason);
 
   let html = `<div class="muted small">第 ${s.index + 1} / ${s.total} 頁</div>
     <div class="prompt">${esc(a.prompt)}</div>
@@ -184,6 +185,17 @@ function render() {
       return `<button class="opt ${cls}" data-i="${i}" ${open ? "" : "disabled"}><span class="letter">${LETTERS[i]}</span>${esc(o)}</button>`;
     }).join("")}</div>`;
   }
+  if (isMatch) {
+    const pairs = revealed ? s.reveal?.pairs || [] : [];
+    html += `<div class="card" style="padding:6px 14px;margin:14px 0">${(a.left || []).map((l, i) => {
+      const pick = draft.match[i] || "";
+      const st = revealed && pairs[i] ? (pick === pairs[i] ? "ok" : "bad") : "";
+      return `<div class="match-row ${st}"><span class="l">${esc(l)}</span>
+        <select data-m="${i}" ${open ? "" : "disabled"}><option value="">請選擇…</option>
+          ${(a.choices || []).map((c) => `<option ${c === pick ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+        ${st === "bad" ? `<span class="fix">正確：${esc(pairs[i])}</span>` : ""}</div>`;
+    }).join("")}</div>`;
+  }
   if (needText) {
     const label = a.type === "text" ? "你的答案" : (a.reasonLabel || "你是怎麼判斷的？");
     html += `<label class="field"><span>${esc(label)}</span>
@@ -200,6 +212,10 @@ function render() {
     if (hasOptions && ans != null) {
       html += mine?.choice === ans ? `<div class="status-bar ok">🎉 答對了！</div>`
             : `<div class="status-bar bad">正確答案是 ${LETTERS[ans]}. ${esc(a.options[ans])}</div>`;
+    } else if (isMatch && (s.reveal?.pairs || []).length) {
+      const pairs = s.reveal.pairs, ok = pairs.filter((p, i) => (mine?.match || [])[i] === p).length;
+      html += ok === pairs.length ? `<div class="status-bar ok">🎉 全部配對正確！</div>`
+            : `<div class="status-bar bad">答對 ${ok} / ${pairs.length} 組，紅色的是要訂正的</div>`;
     } else {
       html += `<div class="status-bar info">老師公布答案了</div>`;
     }
@@ -212,6 +228,9 @@ function render() {
   card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
     draft.choice = Number(b.dataset.i);
     card.querySelectorAll(".opt").forEach((x) => x.classList.toggle("selected", x === b));
+  });
+  card.querySelectorAll("select[data-m]").forEach((sel) => sel.onchange = () => {
+    draft.match[Number(sel.dataset.m)] = sel.value;
   });
   const ta = $("#ans-text");
   if (ta) ta.oninput = () => { draft.text = ta.value; };
@@ -226,10 +245,13 @@ function loadImages(root) {
 async function submit(hasOptions, needText) {
   const s = session;
   if (hasOptions && draft.choice == null) return toast("請先選一個答案");
+  const isMatch = s.activity.type === "match";
+  if (isMatch && (s.activity.left || []).some((_, i) => !draft.match[i])) return toast("每一個都要配對喔");
   if (needText && !draft.text.trim()) return toast(s.activity.type === "text" ? "請寫下你的答案" : "請寫下你的判斷理由");
   const data = {
     uid: user.uid, index: s.index, seat: profile.seat, name: profile.name,
     choice: hasOptions ? draft.choice : null, text: needText ? draft.text.trim() : "",
+    ...(isMatch ? { match: (s.activity.left || []).map((_, i) => draft.match[i] || "") } : {}),
     at: serverTimestamp(),
   };
   const btn = $("#btn-submit"); btn.disabled = true;

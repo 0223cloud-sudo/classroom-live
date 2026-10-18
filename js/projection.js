@@ -33,6 +33,17 @@ export async function renderScreen(root, s) {
       </div></div>`;
   } else if (p.mode === "blank") {
     body = `<div class="s-blank"><div class="big">${esc(s.lessonTitle)}</div><div>請看老師 👀</div></div>`;
+  } else if (p.mode === "chart" && a.type === "match") {
+    const counts = p.counts || [];
+    const n = Math.max(1, p.answered || 0);
+    body = `<div class="s-prompt">${esc(a.prompt)}</div>
+      <div class="muted" style="font-size:.7em;margin-bottom:.4em">每一組答對的人數</div>
+      <div class="s-bars">${(a.left || []).map((l, i) => `
+        <div class="s-bar-row"><b>${esc(l)}</b>
+          <div><div class="s-bar ok" style="width:${(counts[i] || 0) / n * 100}%"></div></div>
+          <b>${counts[i] || 0}</b></div>`).join("")}
+      </div>
+      <div class="muted" style="margin-top:.6em;font-size:.75em">已作答 ${p.answered ?? 0} 人</div>`;
   } else if (p.mode === "chart") {
     const counts = p.counts || [];
     const max = Math.max(1, ...counts);
@@ -50,6 +61,7 @@ export async function renderScreen(root, s) {
       ${items.length ? `<div class="s-cards">${items.map((it) => `
         <div class="s-card"><div class="lbl">想法 ${esc(it.label)}</div>
           ${it.choice != null && a.options ? `<div class="ch">${LETTERS[it.choice]}. ${esc(a.options[it.choice])}</div>` : ""}
+          ${it.pairs ? (a.left || []).map((l, k) => `<div class="pair">${esc(l)} → <b>${esc(it.pairs[k] || "？")}</b></div>`).join("") : ""}
           ${it.text ? `<div class="txt">${esc(it.text)}</div>` : ""}
         </div>`).join("")}</div>` : `<div class="muted">（老師還沒有挑選答案）</div>`}`;
   } else {
@@ -60,12 +72,19 @@ export async function renderScreen(root, s) {
       ? `<div class="s-opts">${a.options.map((o, i) => `
           <div class="s-opt ${ans === i ? "correct" : ""}"><span class="letter">${LETTERS[i]}</span>${esc(o)}</div>`).join("")}</div>`
       : "";
+    let match = "";
+    if (a.type === "match") {
+      const pairs = revealed ? s.reveal?.pairs || [] : [];
+      match = `<div class="s-match">${(a.left || []).map((l, i) => `
+          <div class="s-match-row ${pairs[i] ? "ok" : ""}"><b>${esc(l)}</b><span>→</span><b>${pairs[i] ? esc(pairs[i]) : "？"}</b></div>`).join("")}</div>
+        ${revealed ? "" : `<div class="s-pool">${(a.choices || []).map((c) => `<span>${esc(c)}</span>`).join("")}</div>`}`;
+    }
     const explain = revealed && s.reveal?.explanation
       ? `<div class="s-explain">${esc(s.reveal.explanation)}</div>` : "";
     const stateTag = a.type === "slide" ? "" :
       s.state === "answering" ? `<span class="tag">作答中</span>` :
       s.state === "locked" ? `<span class="tag wait">已停止作答</span>` : `<span class="tag ok">公布答案</span>`;
-    const side = `<div class="s-prompt">${esc(a.prompt)}</div><div style="font-size:.6em">${stateTag}</div>${opts}${explain}`;
+    const side = `<div class="s-prompt">${esc(a.prompt)}</div><div style="font-size:.6em">${stateTag}</div>${opts}${match}${explain}`;
     body = a.image
       ? `<div class="s-split"><div class="s-img"><img data-img="${esc(a.image)}" alt=""></div><div class="s-side">${side}</div></div>`
       : `<div>${side}</div>`;

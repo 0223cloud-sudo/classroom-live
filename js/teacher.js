@@ -114,12 +114,33 @@ async function newCode() {
   throw new Error("無法產生課堂代碼");
 }
 
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+// 給學生看的版本：拿掉答案；配合題的右欄打亂順序
 function stripActivity(a) {
-  return {
+  const s = {
     type: a.type, prompt: a.prompt || "", image: a.image || "",
     options: a.type === "choice" ? (a.options || []) : [],
     askReason: !!a.askReason, reasonLabel: a.reasonLabel || "",
   };
+  if (a.type === "match") {
+    s.left = a.left || [];
+    s.choices = shuffle(a.right || []);
+  }
+  return s;
+}
+
+// 配合題：學生每一列選的文字（存文字而不是位置，換頁回來重新打亂也不會錯）
+function matchPicks(r) { return r.match || []; }
+// 配合題：答對幾列（課程的 right[i] 是左邊第 i 列的正確答案）
+function matchScore(r) {
+  const right = currentAct().right || [];
+  const picks = matchPicks(r);
+  return { ok: (live.session.activity.left || []).filter((_, i) => picks[i] && picks[i] === right[i]).length, total: (live.session.activity.left || []).length };
 }
 
 async function renderLive() {
@@ -250,8 +271,27 @@ function currentAct() { return live.lesson.activities[live.session.index] || {};
 
 function isCorrect(r) {
   const a = currentAct();
+  if (a.type === "match") { const sc = matchScore(r); return sc.total ? sc.ok === sc.total : null; }
   if (a.type !== "choice" || a.answer == null || r.choice == null) return null;
   return r.choice === a.answer;
+}
+
+// 長條圖的數字：選擇題＝每個選項幾人；配合題＝每一列答對幾人
+function chartCounts() {
+  const a = live.session.activity;
+  if (a.type === "match") {
+    const right = currentAct().right || [];
+    return (a.left || []).map((_, i) => live.responses.filter((r) => matchPicks(r)[i] === right[i]).length);
+  }
+  return (a.options || []).map((_, i) => live.responses.filter((r) => r.choice === i).length);
+}
+
+function pairsHtml(r) {
+  const a = live.session.activity, right = currentAct().right || [], picks = matchPicks(r);
+  return (a.left || []).map((l, i) => {
+    const mark = safe ? "" : picks[i] === right[i] ? " ✅" : " ❌";
+    return `<div>${esc(l)} → <b>${esc(picks[i] || "（未選）")}</b>${mark}</div>`;
+  }).join("");
 }
 
 // 投影統計（長條圖、加入人數）跟著作答即時更新
@@ -263,7 +303,7 @@ function scheduleProjectionStats() {
     const patch = {};
     if (p.mode === "join" && p.joined !== live.members.length) patch["projection.joined"] = live.members.length;
     if (p.mode === "chart") {
-      const counts = (s.activity.options || []).map((_, i) => live.responses.filter((r) => r.choice === i).length);
+      const counts = chartCounts();
       if (JSON.stringify(counts) !== JSON.stringify(p.counts) || p.answered !== live.responses.length) {
         patch["projection.counts"] = counts;
         patch["projection.answered"] = live.responses.length;
@@ -278,13 +318,16 @@ function setProjection(mode) {
   const proj = { mode };
   if (mode === "join") proj.joined = live.members.length;
   if (mode === "chart") {
-    proj.counts = (s.activity.options || []).map((_, i) => live.responses.filter((r) => r.choice === i).length);
+    proj.counts = chartCounts();
     proj.answered = live.responses.length;
   }
   if (mode === "answers") {
     proj.items = live.selected
       .map((uid) => live.responses.find((r) => r.uid === uid)).filter(Boolean)
-      .map((r, i) => ({ label: LETTERS[i], choice: r.choice ?? null, text: r.text || "" }));
+      .map((r, i) => ({
+        label: LETTERS[i], choice: r.choice ?? null, text: r.text || "",
+        ...(s.activity.type === "match" ? { pairs: matchPicks(r) } : {}),
+      }));
     if (!proj.items.length) return toast("請先在座位表或答案列表點選要投影的答案");
   }
   return updateDoc(doc(db, "sessions", live.code), { projection: proj });
@@ -305,6 +348,7 @@ function setState(state) {
   if (state === "revealed") {
     const a = currentAct();
     patch.reveal = { answer: a.type === "choice" && a.answer != null ? a.answer : null, explanation: a.explanation || "" };
+    if (a.type === "match") patch.reveal.pairs = (a.right || []).slice(0, (a.left || []).length);
     if (!["chart", "answers"].includes(live.session.projection?.mode)) patch.projection = { mode: "question" };
   } else {
     patch.reveal = null;
@@ -343,6 +387,7 @@ function detail(seat) {
   const a = live.session.activity;
   modal(`<h2>${seat} 號 ${esc(m?.name || live.roster.find((x) => x.seat === seat)?.name || "")}</h2>
     ${!m ? `<p class="muted">還沒有加入這堂課</p>` : !r ? `<p class="muted">已加入，這一頁還沒作答</p>` : `
+      ${a.type === "match" ? `<div style="margin-bottom:10px">${pairsHtml(r)}</div>` : ""}
       ${r.choice != null ? `<p><b>${LETTERS[r.choice]}. ${esc(a.options[r.choice])}</b>
         ${isCorrect(r) === true ? `<span class="tag ok">對</span>` : isCorrect(r) === false ? `<span class="tag bad">錯</span>` : ""}</p>` : ""}
       ${r.text ? `<p style="white-space:pre-wrap">${esc(r.text)}</p>` : ""}`}
@@ -365,7 +410,7 @@ function renderLiveBody() {
   for (let n = 1; n <= maxSeat; n++) {
     const m = bySeat.get(n);
     const rosterName = live.roster.find((x) => x.seat === n)?.name || "";
-    let cls = "absent", name = rosterName;
+    let cls = "absent", name = rosterName, score = "";
     if (m) {
       name = m.name;
       const r = respByUid.get(m.uid);
@@ -374,11 +419,16 @@ function renderLiveBody() {
       else {
         const ok = isCorrect(r);
         cls = safe || ok === null ? "answered" : ok ? "correct" : "wrong";
+        if (!safe && a.type === "match") {
+          const sc = matchScore(r);
+          if (sc.ok > 0 && sc.ok < sc.total) cls = "partial";
+          score = `${sc.ok}/${sc.total}`;
+        }
         if (live.selected.includes(m.uid)) cls += " selected";
       }
       if ((s.picked || []).includes(m.uid)) cls += " picked";
     }
-    cells += `<div class="seat ${cls}" data-seat="${n}"><span class="no">${n}</span>${safe || !name ? "" : `<span class="nm">${esc(name)}</span>`}</div>`;
+    cells += `<div class="seat ${cls}" data-seat="${n}"><span class="no">${n}</span>${safe || !name ? "" : `<span class="nm">${esc(name)}</span>`}${score ? `<span class="nm">${score}</span>` : ""}</div>`;
   }
 
   // ---- 答案列表 ----
@@ -389,15 +439,18 @@ function renderLiveBody() {
     return `<div class="ans ${sel >= 0 ? "selected" : ""}" data-uid="${r.uid}">
       <div class="meta">${sel >= 0 ? `<b>想法 ${LETTERS[sel]}</b>　` : ""}${safe ? "" : `${r.seat} 號 ${esc(r.name)}`}
         ${!safe && ok === true ? `<span class="tag ok">對</span>` : ""}${!safe && ok === false ? `<span class="tag bad">錯</span>` : ""}</div>
+      ${a.type === "match" ? pairsHtml(r) : ""}
       ${r.choice != null ? `<div><b>${LETTERS[r.choice]}. ${esc(a.options[r.choice])}</b></div>` : ""}
       ${r.text ? `<div class="txt">${esc(r.text)}</div>` : ""}</div>`;
   }).join("");
 
   // ---- 長條圖（老師自己看）----
-  const counts = (a.options || []).map((_, i) => live.responses.filter((r) => r.choice === i).length);
+  const counts = chartCounts();
   const maxC = Math.max(1, ...counts);
   const bars = a.type === "choice" ? `<div class="bars" style="margin-top:12px">${(a.options || []).map((o, i) => `
-    <div class="bar-row"><b>${LETTERS[i]}</b><div><div class="bar ${!safe && act.answer === i ? "ok" : ""}" style="width:${counts[i] / maxC * 100}%"></div></div><span>${counts[i]}</span></div>`).join("")}</div>` : "";
+    <div class="bar-row"><b>${LETTERS[i]}</b><div><div class="bar ${!safe && act.answer === i ? "ok" : ""}" style="width:${counts[i] / maxC * 100}%"></div></div><span>${counts[i]}</span></div>`).join("")}</div>`
+    : a.type === "match" && !safe ? `<div class="small muted" style="margin-top:12px">每一列答對人數</div><div class="bars">${(a.left || []).map((l, i) => `
+    <div class="bar-row" style="grid-template-columns:5em 1fr 3em"><b>${esc(l)}</b><div><div class="bar ok" style="width:${counts[i] / Math.max(1, live.responses.length) * 100}%"></div></div><span>${counts[i]}/${live.responses.length}</span></div>`).join("")}</div>` : "";
 
   const stateTag = !isQ ? `<span class="tag">投影片</span>` :
     s.state === "answering" ? `<span class="tag">作答中</span>` :
@@ -419,6 +472,8 @@ function renderLiveBody() {
           ${a.image ? `<img data-img="${esc(a.image)}" alt="" style="margin-top:8px">` : ""}
           ${(a.options || []).length ? `<div class="small" style="margin-top:8px">${a.options.map((o, i) =>
             `<span class="tag ${!safe && act.answer === i ? "ok" : ""}" style="margin:2px">${LETTERS[i]}. ${esc(o)}</span>`).join("")}</div>` : ""}
+          ${a.type === "match" ? `<div class="small" style="margin-top:8px">${(a.left || []).map((l, i) =>
+            `<span class="tag" style="margin:2px">${esc(l)}${safe ? "" : ` → ${esc((act.right || [])[i] || "")}`}</span>`).join("")}</div>` : ""}
         </div>
         <div class="card">
           <div class="row" style="margin-bottom:10px">
@@ -432,6 +487,7 @@ function renderLiveBody() {
             ${isQ ? `<span><i style="border-color:var(--wait);background:var(--wait-soft)"></i>未作答</span>
             <span><i style="border-color:var(--accent);background:var(--accent-soft)"></i>已作答</span>
             ${safe ? "" : `<span><i style="border-color:var(--ok);background:var(--ok-soft)"></i>答對</span>
+            ${a.type === "match" ? `<span><i style="border-color:var(--partial);background:var(--partial-soft)"></i>部分對</span>` : ""}
             <span><i style="border-color:var(--bad);background:var(--bad-soft)"></i>答錯</span>`}` : ""}
             <span>點一下：選取投影｜長按：看答案｜★ 被抽過</span>
           </div>
@@ -455,7 +511,7 @@ function renderLiveBody() {
           <div class="row">
             ${projBtn("join", "加入 QR")}
             ${projBtn("question", "題目")}
-            ${a.type === "choice" ? projBtn("chart", "統計圖") : ""}
+            ${a.type === "choice" || a.type === "match" ? projBtn("chart", "統計圖") : ""}
             ${isQ ? projBtn("answers", `並排答案（${live.selected.length}）`) : ""}
             ${projBtn("blank", "遮蔽")}
           </div>
@@ -468,7 +524,7 @@ function renderLiveBody() {
           <h3>挑答案討論 <span class="muted small">（選了 ${live.selected.length} 份）</span></h3>
           <div class="row" style="margin-bottom:10px">
             <button class="btn secondary sm" id="btn-pick">🎲 隨機抽一位</button>
-            ${a.type === "choice" && act.answer != null ? `<button class="btn secondary sm" id="btn-pick-wrong">🎲 從答錯的抽</button>` : ""}
+            ${(a.type === "choice" && act.answer != null) || a.type === "match" ? `<button class="btn secondary sm" id="btn-pick-wrong">🎲 從答錯的抽</button>` : ""}
             <button class="btn ghost sm" id="btn-clear-sel" ${live.selected.length ? "" : "disabled"}>清除選取</button>
           </div>
           <div class="answer-list">${ansList || `<p class="muted">還沒有人作答</p>`}</div>
@@ -632,7 +688,7 @@ function importLesson() {
 
 function openEditor(lesson) { editing = lesson; renderEditor(); }
 
-const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", text: "簡答題" };
+const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", match: "配合題", text: "簡答題" };
 
 function renderEditor() {
   const root = $("#tab-lessons");
@@ -649,6 +705,7 @@ function renderEditor() {
       <span class="muted">新增一頁：</span>
       <button class="btn secondary sm" data-add="slide">＋ 投影片</button>
       <button class="btn secondary sm" data-add="choice">＋ 選擇題</button>
+      <button class="btn secondary sm" data-add="match">＋ 配合題</button>
       <button class="btn secondary sm" data-add="text">＋ 簡答題</button>
     </div></div>`;
   loadImages(root);
@@ -664,6 +721,7 @@ function renderEditor() {
     const t = b.dataset.add;
     L.activities.push(t === "choice"
       ? { type: "choice", prompt: "", options: ["", "", "", ""], answer: null, askReason: true, explanation: "" }
+      : t === "match" ? { type: "match", prompt: "", left: [], right: [], askReason: false, explanation: "" }
       : t === "text" ? { type: "text", prompt: "", explanation: "" } : { type: "slide", prompt: "" });
     renderEditor();
     window.scrollTo(0, document.body.scrollHeight);
@@ -676,9 +734,15 @@ function renderEditor() {
       const ev = inp.tagName === "SELECT" || inp.type === "checkbox" ? "change" : "input";
       inp.addEventListener(ev, () => {
         if (f === "options") a.options = inp.value.split("\n");
+        else if (f === "left" || f === "right") a[f] = inp.value.split("\n");
         else if (f === "answer") a.answer = inp.value === "" ? null : Number(inp.value);
         else if (f === "askReason") a.askReason = inp.checked;
-        else if (f === "type") { a.type = inp.value; if (a.type === "choice" && !a.options) a.options = ["", "", "", ""]; renderEditor(); }
+        else if (f === "type") {
+          a.type = inp.value;
+          if (a.type === "choice" && !a.options) a.options = ["", "", "", ""];
+          if (a.type === "match" && !a.left) { a.left = []; a.right = []; }
+          renderEditor();
+        }
         else a[f] = inp.value;
         if (f === "options") {
           // 選項改了，答案下拉選單跟著更新
@@ -730,6 +794,14 @@ function actEditor(a, i) {
       <label class="field"><span>正確答案</span><select data-f="answer">${answerOptions(a)}</select></label>
       <label class="row" style="margin-bottom:10px"><input type="checkbox" data-f="askReason" ${a.askReason ? "checked" : ""} style="width:22px;height:22px">要學生寫理由</label>
       ${a.askReason ? `<label class="field"><span>理由欄的提示（可留空）</span><input type="text" data-f="reasonLabel" value="${esc(a.reasonLabel || "")}" placeholder="你是怎麼判斷的？"></label>` : ""}` : ""}
+    ${a.type === "match" ? `
+      <div class="row" style="align-items:flex-start">
+        <label class="field grow"><span>左欄（一行一個）</span><textarea data-f="left" style="min-height:120px">${esc((a.left || []).join("\n"))}</textarea></label>
+        <label class="field grow"><span>右欄：同一行＝正確配對，多出來的行是干擾項</span><textarea data-f="right" style="min-height:120px">${esc((a.right || []).join("\n"))}</textarea></label>
+      </div>
+      <p class="muted small" style="margin-top:-6px">學生看到的右欄順序會自動打亂。</p>
+      <label class="row" style="margin-bottom:10px"><input type="checkbox" data-f="askReason" ${a.askReason ? "checked" : ""} style="width:22px;height:22px">要學生寫理由</label>
+      ${a.askReason ? `<label class="field"><span>理由欄的提示（可留空）</span><input type="text" data-f="reasonLabel" value="${esc(a.reasonLabel || "")}" placeholder="你是怎麼記住的？"></label>` : ""}` : ""}
     ${a.type !== "slide" ? `<label class="field"><span>公布答案時的說明（可留空）</span><textarea data-f="explanation" style="min-height:60px">${esc(a.explanation || "")}</textarea></label>` : ""}
   </div>`;
 }
@@ -741,6 +813,12 @@ async function saveLesson() {
     if (a.type === "choice") {
       o.options = (a.options || []).map((x) => x.trim()).filter((x) => x !== "");
       o.answer = a.answer != null && a.answer < o.options.length ? a.answer : null;
+      o.askReason = !!a.askReason;
+      o.reasonLabel = a.reasonLabel || "";
+    }
+    if (a.type === "match") {
+      o.left = (a.left || []).map((x) => x.trim()).filter(Boolean);
+      o.right = (a.right || []).map((x) => x.trim()).filter(Boolean);
       o.askReason = !!a.askReason;
       o.reasonLabel = a.reasonLabel || "";
     }
