@@ -37,6 +37,25 @@ service cloud.firestore {
       allow delete: if isTeacher();
     }
 
+    // 匿名調查（survey/）：學生匿名登入，每台裝置只能交一份，只有老師能看結果
+    match /surveys/{sid} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+
+      match /responses/{uid} {
+        allow read: if isTeacher() || (signedIn() && request.auth.uid == uid);
+        // 只能新增、不能修改（交過就不能再交）
+        allow create: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['g', 'items', 'round'])
+          && request.resource.data.g in ['m', 'f', 'n']
+          && request.resource.data.items is list
+          && request.resource.data.items.size() >= 1
+          && request.resource.data.items.size() <= 17
+          && request.resource.data.round is int;
+        allow delete: if isTeacher();
+      }
+    }
+
     match /sessions/{code} {
       allow read: if signedIn();
       allow write: if isTeacher();
