@@ -78,6 +78,8 @@ onAuthStateChanged(auth, async (u) => {
   }
   show("v-app");
   applySafe();
+  fetch("version.json", { cache: "no-store" }).then((r) => r.json())
+    .then((d) => { $("#app-version").textContent = "版本 " + d.v; }).catch(() => {});
   await reloadData();
   renderLive();
 });

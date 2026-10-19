@@ -4,6 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>投影畫面</title>
+  <script>
+    // 自動更新：網站有新版本時，強制下載最新檔案（不必等瀏覽器暫存過期）
+    (async () => {
+      try {
+        const r = await fetch("version.json", { cache: "no-store" });
+        const v = String((await r.json()).v);
+        window.APP_VERSION = v;
+        const old = localStorage.getItem("appVersion");
+        if (old === v) return;
+        const files = ["index.html", "teacher.html", "screen.html", "css/style.css", "js/config.js", "js/firebase.js",
+          "js/projection.js", "js/student.js", "js/teacher.js", "js/textsize.js"];
+        await Promise.all(files.map((f) => fetch(f, { cache: "reload" }).catch(() => {})));
+        localStorage.setItem("appVersion", v);
+        // 確定有記住新版本才重新整理一次（無法儲存時不重整，避免一直重新整理）
+        if (localStorage.getItem("appVersion") === v) location.reload();
+      } catch (e) { /* 離線或讀不到就照常使用 */ }
+    })();
+  </script>
   <link rel="stylesheet" href="css/style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 </head>
