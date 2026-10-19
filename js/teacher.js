@@ -203,7 +203,7 @@ async function startSession() {
       code, active: true, createdAt: serverTimestamp(),
       classId: cls.id, className: cls.name, lessonId: lesson.id, lessonTitle: lesson.title,
       index: 0, total: lesson.activities.length, activity: stripActivity(lesson.activities[0]),
-      state: "answering", reveal: null, picked: [],
+      state: "lobby", reveal: null, picked: [],
       projection: { mode: "join", joined: 0 },
     };
     // 不等伺服器回應，畫面先進入上課（Firestore 會在背景完成寫入）
@@ -385,10 +385,13 @@ function setProjection(mode) {
 async function goTo(i) {
   const acts = live.lesson.activities;
   if (i < 0 || i >= acts.length) return;
-  const mode = live.session.projection?.mode === "join" ? "join" : "question";
+  // 從等待室開始第一題時，大螢幕從 QR Code 換成題目
+  const fromLobby = live.session.state === "lobby";
+  const mode = !fromLobby && live.session.projection?.mode === "join" ? "join" : "question";
   await updateDoc(doc(db, "sessions", live.code), {
     index: i, total: acts.length, activity: stripActivity(acts[i]),
-    state: "answering", reveal: null, projection: { mode, joined: live.members.length },
+    state: acts[i].type === "slide" ? "answering" : "preview",
+    reveal: null, projection: { mode, joined: live.members.length },
   });
 }
 
@@ -450,6 +453,9 @@ function renderLiveBody() {
   if (!live.code || !live.session) return;
   const s = live.session, a = s.activity || {}, act = currentAct();
   const isQ = a.type !== "slide";
+  const lobby = s.state === "lobby";
+  const preview = s.state === "preview";
+  const collecting = isQ && !lobby && !preview;
   const mode = s.projection?.mode || "question";
 
   // ---- 座位表 ----
@@ -466,6 +472,7 @@ function renderLiveBody() {
       name = m.name;
       const r = respByUid.get(m.uid);
       if (!isQ) cls = "";
+      else if (!collecting) cls = "";
       else if (!r) { cls = "joined"; missing.push(n); }
       else {
         const ok = isCorrect(r);
@@ -509,23 +516,29 @@ function renderLiveBody() {
     : a.type === "match" && !safe ? `<div class="small muted" style="margin-top:12px">每一列答對人數</div><div class="bars">${(a.left || []).map((l, i) => `
     <div class="bar-row" style="grid-template-columns:5em 1fr 3em"><b>${esc(l)}</b><div><div class="bar ok" style="width:${counts[i] / Math.max(1, live.responses.length) * 100}%"></div></div><span>${counts[i]}/${live.responses.length}</span></div>`).join("")}</div>` : "";
 
-  const stateTag = !isQ ? `<span class="tag">投影片</span>` :
+  const stateTag = lobby ? `<span class="tag wait">等待室</span>` :
+    !isQ ? `<span class="tag">投影片</span>` :
+    preview ? `<span class="tag wait">預覽中・學生還看不到題目</span>` :
     s.state === "answering" ? `<span class="tag">作答中</span>` :
     s.state === "locked" ? `<span class="tag wait">已停止作答</span>` : `<span class="tag ok">已公布</span>`;
   const projBtn = (m, label) => `<button class="btn secondary sm ${mode === m ? "on" : ""}" data-proj="${m}">${label}</button>`;
 
   root.innerHTML = `
     <div class="live-head">
-      <span class="progress">第 ${s.index + 1} / ${s.total} 頁</span> ${stateTag}
+      <span class="progress">${lobby ? "等待學生加入" : `第 ${s.index + 1} / ${s.total} 頁`}</span> ${stateTag}
       <span class="muted">${esc(s.className)}・${esc(s.lessonTitle)}・代碼 <b>${esc(s.code)}</b></span>
       <button class="btn secondary sm" id="btn-qr">📱 顯示 QR Code</button>
       <span class="grow"></span>
+      ${lobby ? `<button class="btn ok" id="btn-begin">▶ 開始第一題</button>` : `
       <button class="btn ghost sm" id="btn-prev" ${s.index === 0 ? "disabled" : ""}>◀ 上一頁</button>
-      <button class="btn sm" id="btn-next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>
+      <button class="btn sm" id="btn-next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>`}
     </div>
     <div class="live">
       <div>
+        ${lobby ? `<div class="card"><h3 style="margin:0 0 6px">🚪 等待室</h3>
+          <p class="muted" style="margin:0">學生加入後只會看到「等老師開始」，看不到題目。大家到齊後，按右上角「▶ 開始第一題」。</p></div>` : ""}
         <div class="card mini-q">
+          ${lobby ? `<div class="muted small">第一頁預覽（只有你看得到）</div>` : ""}
           <div class="prompt">${esc(a.prompt)}</div>
           ${a.image ? `<img data-img="${esc(a.image)}" alt="" style="margin-top:8px">` : ""}
           ${(a.options || []).length ? `<div class="small" style="margin-top:8px">${a.options.map((o, i) =>
@@ -536,13 +549,13 @@ function renderLiveBody() {
         <div class="card">
           <div class="row" style="margin-bottom:10px">
             <b>已加入 ${live.members.length} 人</b>
-            ${isQ ? `<b>・已作答 ${live.responses.length} 人</b>` : ""}
-            ${isQ && missing.length ? `<span class="muted small">未作答：${missing.join("、")}</span>` : ""}
+            ${collecting ? `<b>・已作答 ${live.responses.length} 人</b>` : ""}
+            ${collecting && missing.length ? `<span class="muted small">未作答：${missing.join("、")}</span>` : ""}
           </div>
           <div class="seats">${cells}</div>
           <div class="legend">
             <span><i style="border-color:var(--idle);border-style:dashed"></i>未加入</span>
-            ${isQ ? `<span><i style="border-color:var(--wait);background:var(--wait-soft)"></i>未作答</span>
+            ${collecting ? `<span><i style="border-color:var(--wait);background:var(--wait-soft)"></i>未作答</span>
             <span><i style="border-color:var(--accent);background:var(--accent-soft)"></i>已作答</span>
             ${safe ? "" : `<span><i style="border-color:var(--ok);background:var(--ok-soft)"></i>答對</span>
             ${a.type === "match" ? `<span><i style="border-color:var(--partial);background:var(--partial-soft)"></i>部分對</span>` : ""}
@@ -552,7 +565,12 @@ function renderLiveBody() {
         </div>
       </div>
       <div class="panel">
-        ${isQ ? `<div class="card">
+        ${isQ && preview ? `<div class="card">
+          <h3>作答</h3>
+          <p class="muted small" style="margin-top:0">題目已經在大螢幕上，學生平板顯示「請看大螢幕」。講解完再開放。</p>
+          <button class="btn ok big" data-state="answering">▶ 開放作答</button>
+        </div>` : ""}
+        ${collecting ? `<div class="card">
           <h3>作答</h3>
           <div class="ctrl-grid">
             ${s.state === "answering"
@@ -578,7 +596,7 @@ function renderLiveBody() {
             <button class="btn ghost sm" id="btn-screen-link">投影電腦網址</button>
           </div>
         </div>
-        ${isQ ? `<div class="card">
+        ${collecting ? `<div class="card">
           <h3>挑答案討論 <span class="muted small">（選了 ${live.selected.length} 份）</span></h3>
           <div class="row" style="margin-bottom:10px">
             <button class="btn secondary sm" id="btn-pick">🎲 隨機抽一位</button>
@@ -602,8 +620,11 @@ function renderLiveBody() {
   root.querySelectorAll(".ans[data-uid]").forEach((el) => el.onclick = () => toggleSelect(el.dataset.uid));
   root.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => setState(b.dataset.state));
   root.querySelectorAll("[data-proj]").forEach((b) => b.onclick = () => setProjection(b.dataset.proj));
-  $("#btn-prev").onclick = () => goTo(s.index - 1);
-  $("#btn-next").onclick = () => goTo(s.index + 1);
+  if (lobby) $("#btn-begin").onclick = () => goTo(0);
+  else {
+    $("#btn-prev").onclick = () => goTo(s.index - 1);
+    $("#btn-next").onclick = () => goTo(s.index + 1);
+  }
   $("#btn-embed").onclick = openEmbed;
   $("#btn-qr").onclick = () => showJoinQr(s.code);
   $("#btn-screen-link").onclick = () => {

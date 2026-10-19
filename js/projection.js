@@ -17,7 +17,7 @@ export async function renderScreen(root, s) {
   const p = s.projection || { mode: "question" };
   const a = s.activity || {};
   const top = `<div class="screen-top"><span>${esc(s.className)}・${esc(s.lessonTitle)}</span>
-    <span>課堂代碼 <b>${esc(s.code)}</b>・第 ${s.index + 1} / ${s.total} 頁</span></div>`;
+    <span>課堂代碼 <b>${esc(s.code)}</b>・${s.state === "lobby" ? "等待開始" : `第 ${s.index + 1} / ${s.total} 頁`}</span></div>`;
   let body = "";
 
   if (p.mode === "join") {
@@ -86,6 +86,7 @@ export async function renderScreen(root, s) {
     const explain = revealed && s.reveal?.explanation
       ? `<div class="s-explain">${esc(s.reveal.explanation)}</div>` : "";
     const stateTag = a.type === "slide" ? "" :
+      s.state === "preview" || s.state === "lobby" ? `<span class="tag wait">先看題目，等一下開放作答</span>` :
       s.state === "answering" ? `<span class="tag">作答中</span>` :
       s.state === "locked" ? `<span class="tag wait">已停止作答</span>` : `<span class="tag ok">公布答案</span>`;
     const side = `<div class="s-prompt">${esc(a.prompt)}</div><div style="font-size:.6em">${stateTag}</div>${opts}${match}${explain}`;

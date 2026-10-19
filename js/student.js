@@ -175,6 +175,23 @@ function render() {
     <div class="prompt">${esc(a.prompt)}</div>
     ${a.image ? `<div class="q-image"><img data-img="${esc(a.image)}" alt=""></div>` : ""}`;
 
+  if (s.state === "lobby") {
+    card.innerHTML = `<div class="center" style="padding:20px 0">
+      <div style="font-size:3rem">✅</div>
+      <h2>已加入課堂</h2>
+      <p style="font-size:1.2rem"><b>${esc(profile.className)} ${profile.seat} 號 ${esc(profile.name)}</b></p>
+      <p class="muted">等老師開始，題目會自動出現 👀</p></div>`;
+    return;
+  }
+  if (s.state === "preview") {
+    card.innerHTML = `<div class="muted small">第 ${s.index + 1} / ${s.total} 頁</div>
+      <div class="center" style="padding:24px 0">
+      <div style="font-size:3rem">👀</div>
+      <h2>請看大螢幕</h2>
+      <p class="muted">老師說明完，就會開放作答</p></div>`;
+    return;
+  }
+
   if (a.type === "slide") {
     html += `<div class="status-bar info">請看老師的投影 👀</div>`;
     card.innerHTML = html;

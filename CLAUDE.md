@@ -43,7 +43,7 @@
 - `lessons/{id}`：課程 `{ title, activities[], updatedAt }`，只有老師能讀寫
 - `images/{id}`：圖片 `{ data: dataURL }`（免費方案不開 Storage，圖片壓縮後存在這裡）；活動裡的 `image` 欄位寫成 `"img:文件ID"` 或網址
 - `profiles/{uid}`：學生 `{ classId, className, seat, name, email }`
-- `sessions/{4碼代碼}`：一堂課，含目前頁面 `activity`（**拿掉答案的版本**）、`state`（answering / locked / revealed）、`reveal`（公布時才寫入答案）、`projection`（大螢幕顯示什麼）
+- `sessions/{4碼代碼}`：一堂課，含目前頁面 `activity`（**拿掉答案的版本**）、`state`（lobby 等待室 → preview 只上大螢幕 → answering → locked → revealed；投影片頁直接 answering）、`reveal`（公布時才寫入答案）、`projection`（大螢幕顯示什麼）
 - `sessions/{code}/members/{uid}`、`sessions/{code}/responses/{uid}_{頁碼}`：加入的學生與作答。**按「結束課堂」會全部刪除**，作答資料不長期保存。
 
 ### 題型（activity.type）
