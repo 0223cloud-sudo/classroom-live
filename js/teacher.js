@@ -2,9 +2,9 @@
 import {
   auth, db, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection, query, where,
   getDocs, onSnapshot, serverTimestamp, writeBatch, onAuthStateChanged, signOut,
-  signInGoogle, isTeacher, uploadImage, resolveImage, esc, $, LETTERS,
+  signInGoogle, isTeacher, uploadImage, resolveImage, esc, $, LETTERS, studentUrl,
 } from "./firebase.js";
-import { renderScreen } from "./projection.js";
+import { renderScreen, qrSvg } from "./projection.js";
 import { initTextSize } from "./textsize.js";
 
 // 介面跟著視窗寬度自動放大，大螢幕不會縮在角落
@@ -375,6 +375,8 @@ function setProjection(mode) {
       }));
     if (!proj.items.length) return toast("請先在座位表或答案列表點選要投影的答案");
   }
+  const names = { join: "加入 QR", question: "題目", chart: "統計圖", answers: "並排答案", blank: "遮蔽" };
+  toast(`大螢幕已切換到：${names[mode] || mode}`);
   return updateDoc(doc(db, "sessions", live.code), { projection: proj });
 }
 
@@ -514,6 +516,7 @@ function renderLiveBody() {
     <div class="live-head">
       <span class="progress">第 ${s.index + 1} / ${s.total} 頁</span> ${stateTag}
       <span class="muted">${esc(s.className)}・${esc(s.lessonTitle)}・代碼 <b>${esc(s.code)}</b></span>
+      <button class="btn secondary sm" id="btn-qr">📱 顯示 QR Code</button>
       <span class="grow"></span>
       <button class="btn ghost sm" id="btn-prev" ${s.index === 0 ? "disabled" : ""}>◀ 上一頁</button>
       <button class="btn sm" id="btn-next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>
@@ -600,6 +603,7 @@ function renderLiveBody() {
   $("#btn-prev").onclick = () => goTo(s.index - 1);
   $("#btn-next").onclick = () => goTo(s.index + 1);
   $("#btn-embed").onclick = openEmbed;
+  $("#btn-qr").onclick = () => showJoinQr(s.code);
   $("#btn-screen-link").onclick = () => {
     const url = new URL("screen.html", location.href).href;
     modal(`<h2>投影電腦</h2><p>在教室電腦打開這個網址，用同一個老師帳號登入，畫面會自動跟著這堂課：</p>
@@ -618,6 +622,18 @@ function renderLiveBody() {
     toast("課堂已結束");
     renderLive();
   };
+}
+
+// ---- 在老師的螢幕上直接秀 QR Code（沒有投影時，拿著 iPad 給學生掃）----
+function showJoinQr(code) {
+  const url = studentUrl(code);
+  const m = modal(`<div class="center">
+    <h2 style="margin-bottom:4px">掃描加入課堂</h2>
+    <div class="join-qr">${qrSvg(url)}</div>
+    <div class="muted small">或打開 ${esc(url.replace(/^https?:\/\//, "").replace(/\?s=.*$/, ""))} 輸入代碼</div>
+    <div style="font-size:2.6rem;font-weight:800;letter-spacing:.15em;color:var(--accent)">${esc(code)}</div>
+    <button class="btn" style="margin-top:8px" onclick="this.closest('.modal').remove()">關閉</button></div>`);
+  return m;
 }
 
 // ---- 在 iPad 上直接顯示投影畫面（鏡像投影用）----

@@ -210,3 +210,7 @@ body.screen { background: #fbfaf7; font-size: 28px; overflow: hidden; }
 .s-pool { display: flex; flex-wrap: wrap; gap: .4em; margin-top: .6em; }
 .s-pool span { padding: .2em .7em; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .s-card .pair { font-size: .9em; }
+
+/* ---- 老師螢幕上的加入 QR Code ---- */
+.join-qr { width: min(70vmin, 420px); margin: 8px auto; background: #fff; padding: 8px; border-radius: 12px; }
+.join-qr svg { width: 100%; height: auto; display: block; }
