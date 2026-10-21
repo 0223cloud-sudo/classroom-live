@@ -39,7 +39,7 @@
   </div>
   <script type="module">
     import { auth, db, doc, collection, query, where, onSnapshot, onAuthStateChanged,
-      signInGoogle, isTeacher, signOut, $ } from "./js/firebase.js";
+      signInGoogle, signInSeat, isTeacher, signOut, $ } from "./js/firebase.js";
     import { renderScreen } from "./js/projection.js";
 
     // 網址可以帶 ?s=代碼；不帶的話自動跟著最新開始的課堂
@@ -52,11 +52,9 @@
 
     onAuthStateChanged(auth, (u) => {
       if (unsub) { unsub(); unsub = null; }
-      if (!u) { $("#login").classList.remove("hidden"); return; }
-      if (!isTeacher(u)) {
-        $("#err").textContent = "請用老師帳號登入"; $("#err").classList.remove("hidden");
-        signOut(auth); return;
-      }
+      // 不用登入：教室電腦每次重開機都會清空，所以自動用匿名身分連線
+      // （投影畫面只顯示要給全班看的內容，沒有姓名和對錯）
+      if (!u) { signInSeat().catch(() => $("#login").classList.remove("hidden")); return; }
       $("#login").classList.add("hidden");
       const q = query(collection(db, "sessions"), where("active", "==", true));
       unsub = onSnapshot(q, (qs) => {

@@ -59,9 +59,11 @@ export async function renderScreen(root, s) {
       <div class="muted" style="margin-top:.6em;font-size:.75em">已作答 ${p.answered ?? 0} 人</div>`;
   } else if (p.mode === "answers") {
     const items = p.items || [];
+    const head = p.kind === "wrong" ? "🎭 有同學這樣想，哪裡誤會了呢？" : items.length > 1 ? "💬 看看大家的想法" : "💬 看看這個想法";
     body = `<div class="s-prompt" style="font-size:1.1em">${esc(a.prompt)}</div>
+      <div class="muted" style="font-size:.75em;margin-bottom:.4em">${head}</div>
       ${items.length ? `<div class="s-cards">${items.map((it) => `
-        <div class="s-card"><div class="lbl">想法 ${esc(it.label)}</div>
+        <div class="s-card"><div class="lbl">${it.who ? `🎲 ${esc(it.who)}` : `💭 想法 ${esc(it.label)}`}</div>
           ${it.choice != null && a.options ? `<div class="ch">${LETTERS[it.choice]}. ${esc(a.options[it.choice])}</div>` : ""}
           ${it.multi ? `<div class="ch">${it.multi.map((k) => `${LETTERS[k]}. ${esc((a.options || [])[k])}`).join("、") || "（沒有選）"}</div>` : ""}
           ${it.pairs ? (a.left || []).map((l, k) => `<div class="pair">${esc(l)} → <b>${esc(it.pairs[k] || "？")}</b></div>`).join("") : ""}

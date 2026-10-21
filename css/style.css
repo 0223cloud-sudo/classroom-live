@@ -237,3 +237,11 @@ body.screen { background: #fbfaf7; font-size: 28px; overflow: hidden; }
   .seats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .ctl-bar .btn { flex: 1 1 auto; }
 }
+
+/* ---- 學生平板：同步顯示大螢幕的想法或統計 ---- */
+.shared { margin-top: 18px; border-top: 2px dashed var(--line); padding-top: 12px; }
+.shared-head { font-weight: 700; margin-bottom: 8px; }
+.shared-card { background: var(--accent-soft); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; }
+.shared-card .lbl { font-size: .85rem; color: var(--accent); font-weight: 700; }
+.shared-card .txt { white-space: pre-wrap; }
+.shared .bar-row { margin-bottom: 6px; }

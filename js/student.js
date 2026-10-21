@@ -142,7 +142,7 @@ async function join(c) {
 
 async function onSession() {
   const s = session;
-  const key = `${s.index}|${s.state}|${JSON.stringify(s.reveal || null)}|${JSON.stringify(s.activity || null)}`;
+  const key = `${s.index}|${s.state}|${JSON.stringify(s.reveal || null)}|${JSON.stringify(s.activity || null)}|${JSON.stringify(s.projection || null)}`;
   if (key === renderKey) return;
   const indexChanged = !renderKey || renderKey.split("|")[0] !== String(s.index);
   renderKey = key;
@@ -265,6 +265,7 @@ function render() {
     if (s.reveal?.explanation) html += `<div class="explain">${esc(s.reveal.explanation)}</div>`;
   }
 
+  html += sharedHtml(s);
   card.innerHTML = html;
   loadImages(card);
 
@@ -286,6 +287,30 @@ function render() {
   if (ta) ta.oninput = () => { draft.text = ta.value; };
   const sb = $("#btn-submit");
   if (sb) sb.onclick = () => submit(hasOptions, needText);
+}
+
+// 老師投影到大螢幕的想法或統計，學生平板也同步顯示（只能看）
+function sharedHtml(s) {
+  const p = s.projection || {}, a = s.activity || {};
+  if (!["locked", "revealed"].includes(s.state)) return "";
+  if (p.mode === "answers" && (p.items || []).length) {
+    const head = p.kind === "wrong" ? "🎭 有同學這樣想，哪裡誤會了呢？" : "💬 看看大家的想法";
+    return `<div class="shared"><div class="shared-head">📺 大螢幕：${head}</div>
+      ${p.items.map((it) => `<div class="shared-card">
+        <div class="lbl">${it.who ? esc(it.who) : `想法 ${esc(it.label)}`}</div>
+        ${it.choice != null && a.options ? `<div><b>${LETTERS[it.choice]}. ${esc(a.options[it.choice])}</b></div>` : ""}
+        ${it.multi ? `<div><b>${it.multi.map((k) => `${LETTERS[k]}. ${esc((a.options || [])[k])}`).join("、")}</b></div>` : ""}
+        ${it.pairs ? (a.left || []).map((l, k) => `<div>${esc(l)} → <b>${esc(it.pairs[k] || "？")}</b></div>`).join("") : ""}
+        ${it.text ? `<div class="txt">${esc(it.text)}</div>` : ""}</div>`).join("")}</div>`;
+  }
+  if (p.mode === "chart" && (p.counts || []).length) {
+    const rows = a.type === "match" ? (a.left || []) : (a.options || []).map((o, i) => `${LETTERS[i]}. ${o}`);
+    const max = a.type === "match" ? Math.max(1, p.answered || 0) : Math.max(1, ...p.counts);
+    return `<div class="shared"><div class="shared-head">📺 大螢幕：${a.type === "match" ? "每一組答對的人數" : "全班的選擇"}</div>
+      ${rows.map((label, i) => `<div class="bar-row" style="grid-template-columns:minmax(4em,auto) 1fr 2.5em">
+        <span>${esc(label)}</span><div><div class="bar" style="width:${(p.counts[i] || 0) / max * 100}%"></div></div><b>${p.counts[i] || 0}</b></div>`).join("")}</div>`;
+  }
+  return "";
 }
 
 function loadImages(root) {

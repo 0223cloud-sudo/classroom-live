@@ -360,7 +360,7 @@ function scheduleProjectionStats() {
   }, 500);
 }
 
-function setProjection(mode) {
+function setProjection(mode, opts = {}) {
   const s = live.session;
   if ((mode === "chart" || mode === "answers") && !liveInfo(s).closed) {
     return toast("停止作答後才能顯示統計或答案，避免影響學生的想法");
@@ -371,19 +371,26 @@ function setProjection(mode) {
     proj.counts = chartCounts();
     proj.answered = live.responses.length;
   }
+  const patch = {};
   if (mode === "answers") {
+    const named = !!opts.named;
+    proj.kind = opts.kind || "picked";
     proj.items = live.selected
       .map((uid) => live.responses.find((r) => r.uid === uid)).filter(Boolean)
       .map((r, i) => ({
-        label: LETTERS[i], choice: r.choice ?? null, text: r.text || "",
+        label: LETTERS[i], uid: r.uid, choice: r.choice ?? null, text: r.text || "",
+        ...(named ? { who: `${r.seat} 號 ${r.name}` } : {}),
         ...(s.activity.type === "match" ? { pairs: matchPicks(r) } : {}),
         ...(s.activity.type === "multi" ? { multi: r.multi || [] } : {}),
       }));
-    if (!proj.items.length) return toast("請先在座位表或答案列表點選要投影的答案");
+    if (!proj.items.length) return toast("請先點選要投影的想法");
+    // 投影紀錄：只存內部編號，老師的控制台再對回是哪位同學
+    patch.shown = [...(s.shown || []), { page: s.index + 1, items: proj.items.map((it) => ({ label: it.label, uid: it.uid })) }].slice(-60);
   }
-  const names = { join: "加入 QR", question: "題目", chart: "統計圖", answers: "並排答案", blank: "遮蔽" };
+  const names = { join: "加入 QR", question: "題目", chart: "統計圖", answers: "並排想法", blank: "遮蔽" };
   toast(`大螢幕已切換到：${names[mode] || mode}`);
-  return updateDoc(doc(db, "sessions", live.code), { projection: proj });
+  patch.projection = proj;
+  return updateDoc(doc(db, "sessions", live.code), patch);
 }
 
 async function goTo(i) {
@@ -429,13 +436,32 @@ async function randomPick(onlyWrong) {
   let fresh = pool.filter((r) => !picked.includes(r.uid));
   if (!fresh.length) fresh = pool; // 大家都被抽過了，就重新開始
   const r = fresh[Math.floor(Math.random() * fresh.length)];
-  if (!live.selected.includes(r.uid)) live.selected.push(r.uid);
   await updateDoc(doc(db, "sessions", live.code), { picked: [...new Set([...picked, r.uid])] });
-  modal(`<div class="center"><div class="muted">抽到</div>
-    <div style="font-size:3rem;font-weight:800">${r.seat} 號</div>
-    ${safe ? "" : `<div style="font-size:1.4rem">${esc(r.name)}</div>`}
-    <p class="muted small">已加入「並排投影」的選取中</p>
-    <button class="btn" onclick="this.closest('.modal').remove()">好</button></div>`);
+  const a = live.session.activity, ok = isCorrect(r);
+  const closed = liveInfo(live.session).closed;
+  const m = modal(`<div class="center">
+    <div class="muted">🎲 抽到了${onlyWrong ? "（答錯的同學）" : ""}</div>
+    <div style="font-size:3rem;font-weight:800;line-height:1.2">${r.seat} 號</div>
+    <div style="font-size:1.4rem">${esc(r.name)}</div></div>
+    <div class="card" style="margin:12px 0;box-shadow:none;border:1px solid var(--line)">
+      <div class="muted small">他的答案（只有你看得到）${ok === true ? ` <span class="tag ok">對</span>` : ok === false ? ` <span class="tag bad">錯</span>` : ""}</div>
+      ${a.type === "match" ? pairsHtml(r) : ""}${a.type === "multi" ? multiHtml(r) : ""}
+      ${r.choice != null ? `<div><b>${LETTERS[r.choice]}. ${esc(a.options[r.choice])}</b></div>` : ""}
+      ${r.text ? `<div style="white-space:pre-wrap">${esc(r.text)}</div>` : ""}
+    </div>
+    ${closed ? `<div class="ctrl-grid">
+      <button class="btn" data-c="named">📺 投影他的想法（具名）</button>
+      <button class="btn secondary" data-c="anon">🎭 匿名投影</button></div>`
+      : `<p class="muted small">停止作答後才能投影，避免影響還在作答的同學。</p>`}
+    <div class="ctrl-grid" style="margin-top:8px">
+      <button class="btn ghost" data-c="again">🎲 再抽一位</button>
+      <button class="btn ghost" data-c="close">關閉</button></div>
+    <p class="muted small" style="margin-top:10px">⭐ 抽過的同學，座號旁會有星星；下次會優先抽還沒被抽過的人。</p>`);
+  const project = (named) => { m.remove(); live.selected = [r.uid]; setProjection("answers", { named, kind: "picked" }); };
+  m.querySelector("[data-c=named]")?.addEventListener("click", () => project(true));
+  m.querySelector("[data-c=anon]")?.addEventListener("click", () => project(false));
+  m.querySelector("[data-c=again]").onclick = () => { m.remove(); randomPick(onlyWrong); };
+  m.querySelector("[data-c=close]").onclick = () => m.remove();
   renderLiveBody();
 }
 
@@ -522,15 +548,24 @@ function displayBarHtml(s) {
     `<button class="btn secondary sm ${mode === m ? "on" : ""}" data-proj="${m}" ${enabled ? "" : "disabled"} title="${title}">${label}</button>`;
   const chartable = ["choice", "multi", "match"].includes(a.type);
   const wait = "停止作答後才能顯示";
+  const ok = closed && live.responses.length;
+  const kind = mode === "answers" ? s.projection?.kind : "";
+  const cnt = ideaCount();
   return `<div class="row">
     <span class="muted small">大螢幕：</span>
     ${b("question", "📝 題目")}
     ${chartable ? b("chart", "📊 統計", closed, closed ? "" : wait) : ""}
-    ${isQ && liveView === "class" ? `<button class="btn secondary sm ${mode === "answers" ? "on" : ""}" data-ctl="randans" ${closed && live.responses.length ? "" : "disabled"} title="${closed ? "隨機抽幾份不同的答案，匿名並排" : wait}">💬 隨機並排答案</button>` : ""}
-    ${isQ && liveView === "private" ? b("answers", `💬 並排已選（${live.selected.length}）`, closed, closed ? "" : wait) : ""}
     ${b("join", "📱 加入 QR")}
     ${b("blank", "⬛ 遮蔽")}
-  </div>`;
+  </div>
+  ${isQ ? `<div class="row" style="margin-top:8px">
+    <span class="muted small">討論：</span>
+    <button class="btn secondary sm ${kind === "ideas" ? "on" : ""}" data-ctl="ideas" ${ok ? "" : "disabled"} title="${closed ? "挑幾份答案不一樣的想法並排" : wait}">💬 看看大家的想法</button>
+    ${hasAnswerKey() ? `<button class="btn secondary sm ${kind === "wrong" ? "on" : ""}" data-ctl="wrongideas" ${ok ? "" : "disabled"} title="${closed ? "只抽答錯的，一律匿名" : wait}">🎭 看看答錯的原因</button>` : ""}
+    ${liveView === "private" ? `<button class="btn secondary sm ${kind === "picked" ? "on" : ""}" data-proj="answers" ${closed && live.selected.length ? "" : "disabled"} title="${closed ? "在座位表或答案列表點選後投影" : wait}">📌 投影選取的想法（${live.selected.length}）</button>` : ""}
+    <select data-opt="count" title="一次抽幾份" style="width:auto;padding:6px 8px">${[2, 3, 4].map((n) => `<option value="${n}" ${n === cnt ? "selected" : ""}>${n} 份</option>`).join("")}</select>
+    <button class="btn ghost sm" data-ctl="names" title="只影響「看看大家的想法」和「投影選取的想法」；答錯的一律匿名">🏷️ 顯示姓名：${ideaNamed() ? "開" : "關"}</button>
+  </div>` : ""}`;
 }
 
 function bindControls(root, s) {
@@ -543,9 +578,13 @@ function bindControls(root, s) {
     else if (c === "stop" || c === "unreveal") setState("locked");
     else if (c === "reveal") setState("revealed");
     else if (c === "lock") toggleLock();
-    else if (c === "randans") randomAnswers();
+    else if (c === "ideas") pickIdeas("ideas");
+    else if (c === "wrongideas") pickIdeas("wrong");
+    else if (c === "names") { setPref("ideaNamed", ideaNamed() ? "0" : "1"); live.cvKey = null; renderLiveBody(); }
   });
-  root.querySelectorAll("[data-proj]").forEach((btn) => btn.onclick = () => setProjection(btn.dataset.proj));
+  root.querySelectorAll("[data-proj]").forEach((btn) => btn.onclick = () =>
+    setProjection(btn.dataset.proj, btn.dataset.proj === "answers" ? { named: ideaNamed(), kind: "picked" } : {}));
+  root.querySelectorAll("[data-opt=count]").forEach((sel) => sel.onchange = () => setPref("ideaCount", sel.value));
 }
 
 function toggleLock() {
@@ -555,15 +594,58 @@ function toggleLock() {
   return updateDoc(doc(db, "sessions", live.code), { lock: v });
 }
 
-// 上課畫面用：隨機抽幾份「答案不一樣」的作答，匿名並排到大螢幕
-function randomAnswers() {
-  const keyOf = (r) => JSON.stringify([r.choice ?? null, r.multi || null, r.match || null, (r.text || "").trim()]);
-  const pool = [...live.responses].sort(() => Math.random() - 0.5);
+// ---- 討論用的小設定（每台裝置各自記住）----
+function getPref(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
+function setPref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 忽略 */ } }
+const ideaCount = () => Number(getPref("ideaCount", "3")) || 3;
+const ideaNamed = () => getPref("ideaNamed", "0") === "1";
+
+// 這一題系統能不能自己判斷對錯（簡答題、沒設答案的題目不行）
+function hasAnswerKey() {
+  const a = currentAct();
+  return (a.type === "choice" && a.answer != null) || (a.type === "multi" && (a.answers || []).length > 0)
+    || (a.type === "match" && (a.left || []).length > 0);
+}
+
+// 💬 看看大家的想法：挑答案不一樣的幾份；🎭 看看答錯的原因：只抽答錯的、每種錯法各一份，一律匿名
+function pickIdeas(kind) {
+  const n = ideaCount();
+  const answerKey = (r) => JSON.stringify([r.choice ?? null, r.multi || null, r.match || null]);
+  const fullKey = (r) => answerKey(r) + "|" + (r.text || "").trim();
+  let pool = [...live.responses].sort(() => Math.random() - 0.5);
+  if (kind === "wrong") {
+    pool = pool.filter((r) => isCorrect(r) === false);
+    if (!pool.length) return toast("這一題沒有答錯的同學 👍");
+  }
+  if (!pool.length) return toast("還沒有人作答");
+  const keyOf = kind === "wrong" ? answerKey : fullKey;
   const seen = new Set(), pick = [];
-  for (const r of pool) { if (!seen.has(keyOf(r))) { seen.add(keyOf(r)); pick.push(r.uid); } if (pick.length === 3) break; }
-  for (const r of pool) { if (pick.length >= Math.min(2, pool.length)) break; if (!pick.includes(r.uid)) pick.push(r.uid); }
+  for (const r of pool) { if (pick.length >= n) break; if (!seen.has(keyOf(r))) { seen.add(keyOf(r)); pick.push(r.uid); } }
+  for (const r of pool) { if (pick.length >= n) break; if (!pick.includes(r.uid)) pick.push(r.uid); }
   live.selected = pick;
-  return setProjection("answers");
+  return setProjection("answers", { named: kind === "ideas" && ideaNamed(), kind });
+}
+
+// 大螢幕上的想法是誰的（只在完整控制台顯示）
+function whoHtml(s) {
+  const nameOf = (uid) => {
+    const r = live.responses.find((x) => x.uid === uid) || live.members.find((x) => x.uid === uid);
+    return r ? `${r.seat} 號 ${esc(r.name)}` : "（已離開）";
+  };
+  const okTag = (uid) => {
+    const r = live.responses.find((x) => x.uid === uid);
+    const ok = r ? isCorrect(r) : null;
+    return ok === true ? ` <span class="tag ok">對</span>` : ok === false ? ` <span class="tag bad">錯</span>` : "";
+  };
+  const now = s.projection?.mode === "answers" ? s.projection.items || [] : [];
+  const log = (s.shown || []).slice().reverse();
+  if (!now.length && !log.length) return "";
+  return `<div class="card">
+    ${now.length ? `<h3>大螢幕上的想法是誰的 <span class="muted small">（只有你看得到）</span></h3>
+      ${now.map((it) => `<div class="list-item" style="padding:6px 0"><b style="width:4.5em">想法 ${esc(it.label)}</b><span class="grow">${nameOf(it.uid)}${okTag(it.uid)}</span></div>`).join("")}` : ""}
+    ${log.length ? `<details style="margin-top:8px"><summary class="muted small" style="cursor:pointer">這堂課投影過的想法紀錄（${log.length} 次）</summary>
+      ${log.map((g) => `<div class="small" style="padding:4px 0">第 ${g.page} 頁：${g.items.map((it) => `想法 ${esc(it.label)}＝${nameOf(it.uid)}`).join("、")}</div>`).join("")}</details>` : ""}
+  </div>`;
 }
 
 function renderLiveBody() {
@@ -668,6 +750,8 @@ function renderPrivateView() {
           score = `對${sc.hits}/${sc.total}${sc.wrong ? ` 錯${sc.wrong}` : ""}`;
         }
         if (live.selected.includes(m.uid)) cls += " selected";
+        const shownItem = s.projection?.mode === "answers" && (s.projection.items || []).find((it) => it.uid === m.uid);
+        if (shownItem) score = `想法 ${shownItem.label}` + (score ? `・${score}` : "");
       }
       if ((s.picked || []).includes(m.uid)) cls += " picked";
     }
@@ -736,6 +820,7 @@ function renderPrivateView() {
       </div>
       <div class="panel">
         ${collecting && bars ? `<div class="card"><h3>統計 <span class="muted small">（只有你看得到）</span></h3>${bars}</div>` : ""}
+        ${whoHtml(s)}
         <div class="card">${displayBarHtml(s)}
           <div class="row" style="margin-top:10px"><button class="btn ghost sm" id="btn-screen-link">投影電腦網址</button></div>
         </div>
@@ -765,8 +850,8 @@ function renderPrivateView() {
   $("#btn-qr").onclick = () => showJoinQr(s.code);
   $("#btn-classview").onclick = () => setLiveView("class");
   $("#btn-screen-link").onclick = () => {
-    const url = new URL("screen.html", location.href).href;
-    modal(`<h2>投影電腦</h2><p>在教室電腦打開這個網址，用同一個老師帳號登入，畫面會自動跟著這堂課：</p>
+    const url = new URL("tv", location.href).href;
+    modal(`<h2>投影電腦</h2><p>在教室電腦打開這個網址，<b>不用登入</b>，畫面會自動跟著你最新開始的課堂：</p>
       <p style="word-break:break-all"><b>${esc(url)}</b></p>
       <button class="btn" onclick="this.closest('.modal').remove()">好</button>`);
   };
