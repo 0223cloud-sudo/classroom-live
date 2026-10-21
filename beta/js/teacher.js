@@ -8,7 +8,7 @@ import { renderScreen, qrSvg } from "./projection.js";
 import { initTextSize } from "./textsize.js";
 
 // 介面跟著視窗寬度自動放大，大螢幕不會縮在角落
-initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: 1.15 });
+initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: window.innerWidth < 600 ? 1 : 1.15 });
 
 // ---------- 共用 ----------
 function toast(msg) {
@@ -405,7 +405,8 @@ function setState(state) {
     patch.reveal = { answer: a.type === "choice" && a.answer != null ? a.answer : null, explanation: a.explanation || "" };
     if (a.type === "match") patch.reveal.pairs = (a.right || []).slice(0, (a.left || []).length);
     if (a.type === "multi") patch.reveal.answers = a.answers || [];
-    if (!["chart", "answers"].includes(live.session.projection?.mode)) patch.projection = { mode: "question" };
+    // 公布答案時，大螢幕自動切到題目＋正確答案（想再看統計可以再按「統計」）
+    patch.projection = { mode: "question" };
   } else {
     patch.reveal = null;
     if (state === "answering") patch.projection = { mode: "question" };
