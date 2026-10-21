@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>課堂即時互動</title>
+  <script>
+    // 自動更新：網站有新版本時，強制下載最新檔案（不必等瀏覽器暫存過期）
+    (async () => {
+      try {
+        const r = await fetch("version.json", { cache: "no-store" });
+        const v = String((await r.json()).v);
+        window.APP_VERSION = v;
+        const old = localStorage.getItem("appVersion");
+        if (old === v) return;
+        const files = ["index.html", "teacher.html", "screen.html", "css/style.css", "js/config.js", "js/firebase.js",
+          "js/projection.js", "js/student.js", "js/teacher.js", "js/textsize.js"];
+        await Promise.all(files.map((f) => fetch(f, { cache: "reload" }).catch(() => {})));
+        localStorage.setItem("appVersion", v);
+        // 確定有記住新版本才重新整理一次（無法儲存時不重整，避免一直重新整理）
+        if (localStorage.getItem("appVersion") === v) location.reload();
+      } catch (e) { /* 離線或讀不到就照常使用 */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="topbar hidden" id="topbar">
+    <span class="who" id="who"></span>
+    <span class="grow"></span>
+    <span id="textsize-mount"></span>
+    <button class="btn ghost sm" id="btn-edit">修改資料</button>
+    <button class="btn ghost sm" id="btn-logout">登出</button>
+  </div>
+
+  <div class="wrap">
+    <!-- 讀取中 -->
+    <div id="v-loading" class="card center muted">載入中…</div>
+
+    <!-- 登入 -->
+    <div id="v-login" class="card hidden">
+      <h1>課堂即時互動</h1>
+      <p class="muted">請用學校的 Google 帳號登入。</p>
+      <button class="btn big" id="btn-google">用 Google 帳號登入</button>
+      <div id="seat-login" class="hidden" style="margin-top:18px">
+        <button class="btn ghost big" id="btn-seat">Google 登入有問題？改用座號進入</button>
+      </div>
+      <p class="status-bar bad hidden" id="login-err"></p>
+    </div>
+
+    <!-- 基本資料 -->
+    <div id="v-profile" class="card hidden">
+      <h1>填寫基本資料</h1>
+      <p class="muted">只要填一次，之後會自動記住。</p>
+      <label class="field"><span>班級</span><select id="pf-class"></select></label>
+      <label class="field"><span>座號</span><input type="number" id="pf-seat" min="1" max="35" inputmode="numeric"></label>
+      <label class="field"><span>姓名</span><input type="text" id="pf-name" maxlength="20"></label>
+      <button class="btn big" id="btn-save-profile">儲存</button>
+      <p class="status-bar bad hidden" id="pf-err"></p>
+    </div>
+
+    <!-- 輸入課堂代碼 -->
+    <div id="v-code" class="card hidden">
+      <h1>加入課堂</h1>
+      <label class="field"><span>課堂代碼（看投影幕）</span>
+        <input type="text" id="code-input" maxlength="6" autocapitalize="characters" autocomplete="off" style="font-size:1.6rem;letter-spacing:.2em;text-transform:uppercase"></label>
+      <button class="btn big" id="btn-join">加入</button>
+      <p class="status-bar bad hidden" id="code-err"></p>
+    </div>
+
+    <!-- 作答 -->
+    <div id="v-activity" class="hidden">
+      <div class="card" id="act-card"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script type="module" src="js/student.js"></script>
+</body>
+</html>
