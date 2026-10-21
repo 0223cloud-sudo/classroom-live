@@ -163,6 +163,9 @@ function render() {
   const s = session, a = s.activity || {};
   const card = $("#act-card");
   const open = s.state === "answering";
+  // 老師開了「送出後鎖定」：送出之後就不能再改
+  const frozen = !!s.lock && !!mine;
+  const editable = open && !frozen;
   const revealed = s.state === "revealed";
   const ans = revealed ? s.reveal?.answer : null;
   const hasOptions = a.type === "choice" && (a.options || []).length;
@@ -204,7 +207,7 @@ function render() {
       let cls = draft.choice === i ? "selected" : "";
       if (revealed && ans === i) cls = "correct";
       else if (revealed && draft.choice === i && ans != null) cls = "wrong";
-      return `<button class="opt ${cls}" data-i="${i}" ${open ? "" : "disabled"}><span class="letter">${LETTERS[i]}</span>${esc(o)}</button>`;
+      return `<button class="opt ${cls}" data-i="${i}" ${editable ? "" : "disabled"}><span class="letter">${LETTERS[i]}</span>${esc(o)}</button>`;
     }).join("")}</div>`;
   }
   if (isMulti) {
@@ -214,7 +217,7 @@ function render() {
       let cls = on ? "selected" : "";
       if (revealed && correctSet.length) cls = correctSet.includes(i) ? "correct" : on ? "wrong" : "";
       const tag = revealed && correctSet.includes(i) && !on ? `<span class="small" style="margin-left:auto">漏選</span>` : "";
-      return `<button class="opt ${cls}" data-mi="${i}" ${open ? "" : "disabled"}><span class="letter">${on ? "✓" : LETTERS[i]}</span>${esc(o)}${tag}</button>`;
+      return `<button class="opt ${cls}" data-mi="${i}" ${editable ? "" : "disabled"}><span class="letter">${on ? "✓" : LETTERS[i]}</span>${esc(o)}${tag}</button>`;
     }).join("")}</div>`;
   }
   if (isMatch) {
@@ -223,7 +226,7 @@ function render() {
       const pick = draft.match[i] || "";
       const st = revealed && pairs[i] ? (pick === pairs[i] ? "ok" : "bad") : "";
       return `<div class="match-row ${st}"><span class="l">${esc(l)}</span>
-        <select data-m="${i}" ${open ? "" : "disabled"}><option value="">請選擇…</option>
+        <select data-m="${i}" ${editable ? "" : "disabled"}><option value="">請選擇…</option>
           ${(a.choices || []).map((c) => `<option ${c === pick ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
         ${st === "bad" ? `<span class="fix">正確：${esc(pairs[i])}</span>` : ""}</div>`;
     }).join("")}</div>`;
@@ -231,12 +234,15 @@ function render() {
   if (needText) {
     const label = a.type === "text" ? "你的答案" : (a.reasonLabel || "你是怎麼判斷的？");
     html += `<label class="field"><span>${esc(label)}</span>
-      <textarea id="ans-text" ${open ? "" : "disabled"} placeholder="寫下你的想法…">${esc(draft.text)}</textarea></label>`;
+      <textarea id="ans-text" ${editable ? "" : "disabled"} placeholder="寫下你的想法…">${esc(draft.text)}</textarea></label>`;
   }
 
-  if (open) {
+  if (open && frozen) {
+    html += `<div class="status-bar ok">✓ 已送出！答案已鎖定，等老師停止作答</div>`;
+  } else if (open) {
     html += `<button class="btn big" id="btn-submit">${mine ? "更新答案" : "送出"}</button>`;
-    html += mine ? `<div class="status-bar ok">✓ 已送出，老師停止作答前都可以修改</div>` : "";
+    html += s.lock ? `<div class="muted small center" style="margin-top:6px">送出後就不能修改，請想清楚再送出</div>`
+         : mine ? `<div class="status-bar ok">✓ 已送出，老師停止作答前都可以修改</div>` : "";
   } else if (!revealed) {
     html += mine ? `<div class="status-bar wait">老師已停止作答，等待討論</div>`
                  : `<div class="status-bar bad">老師已停止作答（你這題沒有送出）</div>`;
@@ -286,6 +292,7 @@ function loadImages(root) {
   root.querySelectorAll("img[data-img]").forEach((img) => resolveImage(img.dataset.img).then((src) => { img.src = src; }));
 }
 
+let confirmArmed = false;
 async function submit(hasOptions, needText) {
   const s = session;
   if (hasOptions && draft.choice == null) return toast("請先選一個答案");
@@ -294,6 +301,19 @@ async function submit(hasOptions, needText) {
   if (isMulti && !draft.multi.length) return toast("請至少選一個");
   if (isMatch && (s.activity.left || []).some((_, i) => !draft.match[i])) return toast("每一個都要配對喔");
   if (needText && !draft.text.trim()) return toast(s.activity.type === "text" ? "請寫下你的答案" : "請寫下你的判斷理由");
+  // 送出後會鎖定：先按一次變成確認，再按一次才真的送出（不用跳出視窗）
+  if (s.lock && !confirmArmed) {
+    confirmArmed = true;
+    const b = $("#btn-submit");
+    b.textContent = "確定送出？再按一次（送出後不能改）";
+    b.classList.add("ok");
+    setTimeout(() => {
+      confirmArmed = false;
+      if (b.isConnected) { b.textContent = mine ? "更新答案" : "送出"; b.classList.remove("ok"); }
+    }, 5000);
+    return;
+  }
+  confirmArmed = false;
   const data = {
     uid: user.uid, index: s.index, seat: profile.seat, name: profile.name,
     choice: hasOptions ? draft.choice : null, text: needText ? draft.text.trim() : "",

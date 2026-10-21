@@ -108,12 +108,12 @@ body.teacher { font-size: 16px; }
 .tabs button.active { background: var(--accent-soft); color: var(--accent); }
 .t-main { padding: 16px; }
 .live { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .live { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .live { grid-template-columns: minmax(0, 1fr); } }
 .live-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .progress { font-size: 1.05rem; font-weight: 700; }
-.seats { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+.seats { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
 .seat {
-  position: relative; border-radius: 12px; padding: 8px 6px; min-height: 66px; background: #fff; border: 2px solid var(--line);
+  position: relative; min-width: 0; border-radius: 12px; padding: 8px 6px; min-height: 66px; background: #fff; border: 2px solid var(--line);
   display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; user-select: none;
   -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
 }
@@ -214,3 +214,26 @@ body.screen { background: #fbfaf7; font-size: 28px; overflow: hidden; }
 /* ---- 老師螢幕上的加入 QR Code ---- */
 .join-qr { width: min(70vmin, 420px); margin: 8px auto; background: #fff; padding: 8px; border-radius: 12px; }
 .join-qr svg { width: 100%; height: auto; display: block; }
+
+/* ---- 上課畫面（投影安全）---- */
+.classview { display: flex; flex-direction: column; gap: 10px; }
+.cv-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.class-screen {
+  display: flex; flex-direction: column; background: #fbfaf7; border: 1px solid var(--line);
+  border-radius: 16px; padding: 14px 22px; font-size: 22px; min-height: 340px;
+}
+.class-screen .screen-body { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
+.class-screen .s-split .s-img img { max-height: 380px; }
+.class-screen .s-join .qr svg { width: 280px; height: 280px; }
+.cv-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--card); border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); }
+.dots { display: flex; flex-wrap: wrap; gap: 4px; }
+.dot { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: .8rem; font-weight: 700;
+  border: 2px dashed var(--line); color: var(--idle); background: #fff; }
+.dot.in { border-style: solid; border-color: var(--wait); color: var(--ink); background: var(--wait-soft); }
+.dot.done { border-style: solid; border-color: var(--accent); background: var(--accent); color: #fff; }
+.ctl-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn.xl { font-size: 1.15rem; padding: 14px 24px; min-height: 56px; }
+@media (max-width: 600px) {
+  .seats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .ctl-bar .btn { flex: 1 1 auto; }
+}

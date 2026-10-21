@@ -8,7 +8,7 @@ import { renderScreen, qrSvg } from "./projection.js";
 import { initTextSize } from "./textsize.js";
 
 // 介面跟著視窗寬度自動放大，大螢幕不會縮在角落
-initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: 1.15 });
+initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: window.innerWidth < 600 ? 1 : 1.15 });
 
 // ---------- 共用 ----------
 function toast(msg) {
@@ -204,6 +204,7 @@ async function startSession() {
       classId: cls.id, className: cls.name, lessonId: lesson.id, lessonTitle: lesson.title,
       index: 0, total: lesson.activities.length, activity: stripActivity(lesson.activities[0]),
       state: "lobby", reveal: null, picked: [],
+      lock: (() => { try { return localStorage.getItem("lockOnSubmit") !== "0"; } catch (e) { return true; } })(),
       projection: { mode: "join", joined: 0 },
     };
     // 不等伺服器回應，畫面先進入上課（Firestore 會在背景完成寫入）
@@ -361,6 +362,9 @@ function scheduleProjectionStats() {
 
 function setProjection(mode) {
   const s = live.session;
+  if ((mode === "chart" || mode === "answers") && !liveInfo(s).closed) {
+    return toast("停止作答後才能顯示統計或答案，避免影響學生的想法");
+  }
   const proj = { mode };
   if (mode === "join") proj.joined = live.members.length;
   if (mode === "chart") {
@@ -385,13 +389,12 @@ function setProjection(mode) {
 async function goTo(i) {
   const acts = live.lesson.activities;
   if (i < 0 || i >= acts.length) return;
-  // 從等待室開始第一題時，大螢幕從 QR Code 換成題目
-  const fromLobby = live.session.state === "lobby";
-  const mode = !fromLobby && live.session.projection?.mode === "join" ? "join" : "question";
+  // 換頁時大螢幕自動顯示新題目（題目先預覽，按「開放作答」學生才看得到）
+  live.selected = [];
   await updateDoc(doc(db, "sessions", live.code), {
     index: i, total: acts.length, activity: stripActivity(acts[i]),
     state: acts[i].type === "slide" ? "answering" : "preview",
-    reveal: null, projection: { mode, joined: live.members.length },
+    reveal: null, projection: { mode: "question" },
   });
 }
 
@@ -402,9 +405,11 @@ function setState(state) {
     patch.reveal = { answer: a.type === "choice" && a.answer != null ? a.answer : null, explanation: a.explanation || "" };
     if (a.type === "match") patch.reveal.pairs = (a.right || []).slice(0, (a.left || []).length);
     if (a.type === "multi") patch.reveal.answers = a.answers || [];
-    if (!["chart", "answers"].includes(live.session.projection?.mode)) patch.projection = { mode: "question" };
+    // 公布答案時，大螢幕自動切到題目＋正確答案（想再看統計可以再按「統計」）
+    patch.projection = { mode: "question" };
   } else {
     patch.reveal = null;
+    if (state === "answering") patch.projection = { mode: "question" };
   }
   return updateDoc(doc(db, "sessions", live.code), patch);
 }
@@ -448,31 +453,206 @@ function detail(seat) {
     <button class="btn" onclick="this.closest('.modal').remove()">關閉</button>`);
 }
 
-function renderLiveBody() {
-  const root = $("#tab-live");
-  if (!live.code || !live.session) return;
-  const s = live.session, a = s.activity || {}, act = currentAct();
+// ---- 上課畫面有兩種 ----
+// class：上課畫面，投影出去也安全（只有題目、已交人數、座號亮燈，沒有姓名和對錯）
+// private：完整控制台，有姓名、對錯、挑答案（適合手機，或大螢幕不是鏡像這台裝置時）
+let liveView = (() => {
+  try { return localStorage.getItem("liveView") || (window.innerWidth < 700 ? "private" : "class"); }
+  catch (e) { return window.innerWidth < 700 ? "private" : "class"; }
+})();
+function setLiveView(v) {
+  liveView = v;
+  try { localStorage.setItem("liveView", v); } catch (e) { /* 忽略 */ }
+  live.cvKey = null;
+  renderLiveBody();
+}
+function askPrivateView() {
+  if (window.innerWidth < 700) return setLiveView("private"); // 手機不會被投影
+  const m = modal(`<h2>🔐 切到完整控制台？</h2>
+    <p>完整控制台會顯示<b>學生姓名和答對答錯</b>。</p>
+    <p class="status-bar bad" style="margin:10px 0">如果這台 iPad 正在投影（鏡像或 HDMI），全班都會看到。</p>
+    <p class="muted small">想私下看姓名和對錯：用<b>手機</b>打開控制台最方便；或先按投影機遙控器的「凍結 / Freeze」，大螢幕會停在目前畫面，看完再解除。</p>
+    <div class="ctrl-grid" style="margin-top:12px">
+      <button class="btn danger" data-c="go">我知道了，切換</button>
+      <button class="btn ghost" data-c="no">取消</button>
+    </div>`);
+  m.querySelector("[data-c=go]").onclick = () => { m.remove(); setLiveView("private"); };
+  m.querySelector("[data-c=no]").onclick = () => m.remove();
+}
+
+function liveInfo(s) {
+  const a = s.activity || {};
   const isQ = a.type !== "slide";
   const lobby = s.state === "lobby";
   const preview = s.state === "preview";
   const collecting = isQ && !lobby && !preview;
-  const mode = s.projection?.mode || "question";
+  const closed = collecting && (s.state === "locked" || s.state === "revealed"); // 停止作答之後才能看統計
+  const stateTag = lobby ? `<span class="tag wait">等待室</span>` :
+    !isQ ? `<span class="tag">投影片</span>` :
+    preview ? `<span class="tag wait">預覽中・學生還看不到題目</span>` :
+    s.state === "answering" ? `<span class="tag">作答中</span>` :
+    s.state === "locked" ? `<span class="tag wait">已停止作答</span>` : `<span class="tag ok">已公布</span>`;
+  return { a, isQ, lobby, preview, collecting, closed, stateTag };
+}
 
-  // ---- 座位表 ----
+// 兩種畫面共用的操作按鈕（照上課步驟只顯示下一步要按的）
+function controlBarHtml(s) {
+  const { isQ, lobby, preview } = liveInfo(s);
+  let main = "";
+  if (lobby) main = `<button class="btn ok xl" data-ctl="begin">▶ 開始第一題</button>`;
+  else if (isQ && preview) main = `<button class="btn ok xl" data-ctl="open">▶ 開放作答</button>`;
+  else if (isQ && s.state === "answering") main = `<button class="btn xl" data-ctl="stop">⏹ 停止作答</button>`;
+  else if (isQ && s.state === "locked") main = `<button class="btn ok xl" data-ctl="reveal">✅ 公布答案</button>
+    <button class="btn ghost" data-ctl="reopen">重新開放作答</button>`;
+  else if (isQ && s.state === "revealed") main = `<button class="btn ghost" data-ctl="unreveal">收回答案</button>`;
+  return `<div class="ctl-bar">
+    ${lobby ? "" : `<button class="btn ghost" data-ctl="prev" ${s.index === 0 ? "disabled" : ""}>◀ 上一頁</button>`}
+    ${main}
+    ${lobby ? "" : `<button class="btn secondary" data-ctl="next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>`}
+    <span class="grow"></span>
+    ${isQ || lobby ? `<button class="btn ghost sm" data-ctl="lock" title="開：學生送出後就不能改答案">🔒 送出後鎖定：${s.lock ? "開" : "關"}</button>` : ""}
+  </div>`;
+}
+
+// 大螢幕要顯示什麼（平常會自動切換，這裡是手動調整）
+function displayBarHtml(s) {
+  const { a, isQ, closed } = liveInfo(s);
+  const mode = s.projection?.mode || "question";
+  const b = (m, label, enabled = true, title = "") =>
+    `<button class="btn secondary sm ${mode === m ? "on" : ""}" data-proj="${m}" ${enabled ? "" : "disabled"} title="${title}">${label}</button>`;
+  const chartable = ["choice", "multi", "match"].includes(a.type);
+  const wait = "停止作答後才能顯示";
+  return `<div class="row">
+    <span class="muted small">大螢幕：</span>
+    ${b("question", "📝 題目")}
+    ${chartable ? b("chart", "📊 統計", closed, closed ? "" : wait) : ""}
+    ${isQ && liveView === "class" ? `<button class="btn secondary sm ${mode === "answers" ? "on" : ""}" data-ctl="randans" ${closed && live.responses.length ? "" : "disabled"} title="${closed ? "隨機抽幾份不同的答案，匿名並排" : wait}">💬 隨機並排答案</button>` : ""}
+    ${isQ && liveView === "private" ? b("answers", `💬 並排已選（${live.selected.length}）`, closed, closed ? "" : wait) : ""}
+    ${b("join", "📱 加入 QR")}
+    ${b("blank", "⬛ 遮蔽")}
+  </div>`;
+}
+
+function bindControls(root, s) {
+  root.querySelectorAll("[data-ctl]").forEach((btn) => btn.onclick = () => {
+    const c = btn.dataset.ctl;
+    if (c === "begin") goTo(0);
+    else if (c === "prev") goTo(s.index - 1);
+    else if (c === "next") goTo(s.index + 1);
+    else if (c === "open" || c === "reopen") setState("answering");
+    else if (c === "stop" || c === "unreveal") setState("locked");
+    else if (c === "reveal") setState("revealed");
+    else if (c === "lock") toggleLock();
+    else if (c === "randans") randomAnswers();
+  });
+  root.querySelectorAll("[data-proj]").forEach((btn) => btn.onclick = () => setProjection(btn.dataset.proj));
+}
+
+function toggleLock() {
+  const v = !live.session.lock;
+  try { localStorage.setItem("lockOnSubmit", v ? "1" : "0"); } catch (e) { /* 忽略 */ }
+  toast(v ? "已開啟：學生送出後不能修改" : "已關閉：停止作答前學生都能修改");
+  return updateDoc(doc(db, "sessions", live.code), { lock: v });
+}
+
+// 上課畫面用：隨機抽幾份「答案不一樣」的作答，匿名並排到大螢幕
+function randomAnswers() {
+  const keyOf = (r) => JSON.stringify([r.choice ?? null, r.multi || null, r.match || null, (r.text || "").trim()]);
+  const pool = [...live.responses].sort(() => Math.random() - 0.5);
+  const seen = new Set(), pick = [];
+  for (const r of pool) { if (!seen.has(keyOf(r))) { seen.add(keyOf(r)); pick.push(r.uid); } if (pick.length === 3) break; }
+  for (const r of pool) { if (pick.length >= Math.min(2, pool.length)) break; if (!pick.includes(r.uid)) pick.push(r.uid); }
+  live.selected = pick;
+  return setProjection("answers");
+}
+
+function renderLiveBody() {
+  if (!live.code || !live.session) return;
+  if (liveView === "class") renderClassView(); else renderPrivateView();
+}
+
+function seatCount() {
+  return Math.max(35, ...live.members.map((m) => m.seat), ...live.roster.map((r) => r.seat));
+}
+
+// ---- 上課畫面（投影安全）----
+function renderClassView() {
+  const root = $("#tab-live");
+  const s = live.session;
+  const { collecting, stateTag, lobby } = liveInfo(s);
+  // 題目區只在題目或狀態改變時重畫，學生交卷時只更新下方座號，畫面不會閃
+  const key = JSON.stringify([s.index, s.state, s.projection, s.activity, s.reveal]);
+  if (live.cvKey !== key || !root.querySelector(".classview")) {
+    live.cvKey = key;
+    root.innerHTML = `<div class="classview">
+      <div class="cv-head">
+        <span class="progress">${lobby ? "等待學生加入" : `第 ${s.index + 1} / ${s.total} 頁`}</span> ${stateTag}
+        <span class="muted small">代碼 <b>${esc(s.code)}</b></span>
+        <span class="grow"></span>
+        <button class="btn ghost sm" id="btn-qr">📱 顯示 QR Code</button>
+        <button class="btn ghost sm" id="btn-private">🔐 完整控制台</button>
+      </div>
+      <div class="class-screen" id="cv-screen"></div>
+      <div id="cv-strip"></div>
+      <div id="cv-controls"></div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn ghost sm" id="btn-leave">離開（課堂繼續）</button>
+        <button class="btn danger sm" id="btn-end">結束課堂</button>
+      </div>
+    </div>`;
+    renderScreen($("#cv-screen"), s);
+    $("#btn-qr").onclick = () => showJoinQr(s.code);
+    $("#btn-private").onclick = askPrivateView;
+    bindLeaveEnd();
+  }
+  // 已交人數＋座號亮燈（只有座號，沒有姓名、沒有對錯）
+  const answered = new Set(live.responses.map((r) => r.uid));
+  const bySeat = new Map(live.members.map((m) => [m.seat, m]));
+  let dots = "";
+  for (let n = 1; n <= seatCount(); n++) {
+    const m = bySeat.get(n);
+    const cls = !m ? "" : collecting && answered.has(m.uid) ? "done" : "in";
+    dots += `<span class="dot ${cls}">${n}</span>`;
+  }
+  $("#cv-strip").innerHTML = `<div class="cv-strip">
+    <b>${collecting ? `已交 ${live.responses.length} / ${live.members.length}` : `已加入 ${live.members.length} 人`}</b>
+    <div class="dots">${dots}</div></div>`;
+  const ctl = $("#cv-controls");
+  ctl.innerHTML = controlBarHtml(s) + `<div style="margin-top:8px">${displayBarHtml(s)}</div>`;
+  bindControls(ctl, s);
+}
+
+function bindLeaveEnd() {
+  $("#btn-leave").onclick = () => { leaveSession(); renderLive(); };
+  $("#btn-end").onclick = async () => {
+    if (!confirm("結束這堂課？學生的作答資料會一併清除。")) return;
+    const code = live.code;
+    leaveSession();
+    await endSession(code);
+    toast("課堂已結束");
+    renderLive();
+  };
+}
+
+// ---- 完整控制台（私人：姓名、對錯、挑答案）----
+function renderPrivateView() {
+  const root = $("#tab-live");
+  const s = live.session, act = currentAct();
+  const { a, isQ, lobby, collecting, stateTag } = liveInfo(s);
+
+  // 座位表
   const bySeat = new Map(live.members.map((m) => [m.seat, m]));
   const respByUid = new Map(live.responses.map((r) => [r.uid, r]));
-  const maxSeat = Math.max(35, ...live.members.map((m) => m.seat), ...live.roster.map((r) => r.seat));
   let cells = "";
   const missing = [];
-  for (let n = 1; n <= maxSeat; n++) {
+  for (let n = 1; n <= seatCount(); n++) {
     const m = bySeat.get(n);
     const rosterName = live.roster.find((x) => x.seat === n)?.name || "";
     let cls = "absent", name = rosterName, score = "";
     if (m) {
       name = m.name;
       const r = respByUid.get(m.uid);
-      if (!isQ) cls = "";
-      else if (!collecting) cls = "";
+      if (!collecting) cls = "";
       else if (!r) { cls = "joined"; missing.push(n); }
       else {
         const ok = isCorrect(r);
@@ -494,7 +674,7 @@ function renderLiveBody() {
     cells += `<div class="seat ${cls}" data-seat="${n}"><span class="no">${n}</span>${safe || !name ? "" : `<span class="nm">${esc(name)}</span>`}${score ? `<span class="nm">${score}</span>` : ""}</div>`;
   }
 
-  // ---- 答案列表 ----
+  // 答案列表
   const resps = [...live.responses].sort((x, y) => x.seat - y.seat);
   const ansList = resps.map((r) => {
     const ok = isCorrect(r);
@@ -508,44 +688,25 @@ function renderLiveBody() {
       ${r.text ? `<div class="txt">${esc(r.text)}</div>` : ""}</div>`;
   }).join("");
 
-  // ---- 長條圖（老師自己看）----
+  // 長條圖（只有自己看得到）
   const counts = chartCounts();
   const maxC = Math.max(1, ...counts);
-  const bars = a.type === "choice" || a.type === "multi" ? `<div class="bars" style="margin-top:12px">${(a.options || []).map((o, i) => `
+  const bars = a.type === "choice" || a.type === "multi" ? `<div class="bars">${(a.options || []).map((o, i) => `
     <div class="bar-row"><b>${LETTERS[i]}</b><div><div class="bar ${!safe && isAnswerOpt(i) ? "ok" : ""}" style="width:${counts[i] / maxC * 100}%"></div></div><span>${counts[i]}</span></div>`).join("")}</div>`
-    : a.type === "match" && !safe ? `<div class="small muted" style="margin-top:12px">每一列答對人數</div><div class="bars">${(a.left || []).map((l, i) => `
+    : a.type === "match" && !safe ? `<div class="small muted">每一列答對人數</div><div class="bars">${(a.left || []).map((l, i) => `
     <div class="bar-row" style="grid-template-columns:5em 1fr 3em"><b>${esc(l)}</b><div><div class="bar ok" style="width:${counts[i] / Math.max(1, live.responses.length) * 100}%"></div></div><span>${counts[i]}/${live.responses.length}</span></div>`).join("")}</div>` : "";
-
-  const stateTag = lobby ? `<span class="tag wait">等待室</span>` :
-    !isQ ? `<span class="tag">投影片</span>` :
-    preview ? `<span class="tag wait">預覽中・學生還看不到題目</span>` :
-    s.state === "answering" ? `<span class="tag">作答中</span>` :
-    s.state === "locked" ? `<span class="tag wait">已停止作答</span>` : `<span class="tag ok">已公布</span>`;
-  const projBtn = (m, label) => `<button class="btn secondary sm ${mode === m ? "on" : ""}" data-proj="${m}">${label}</button>`;
 
   root.innerHTML = `
     <div class="live-head">
       <span class="progress">${lobby ? "等待學生加入" : `第 ${s.index + 1} / ${s.total} 頁`}</span> ${stateTag}
-      <span class="muted">${esc(s.className)}・${esc(s.lessonTitle)}・代碼 <b>${esc(s.code)}</b></span>
-      <button class="btn secondary sm" id="btn-qr">📱 顯示 QR Code</button>
+      <span class="muted">${esc(s.className)}・代碼 <b>${esc(s.code)}</b></span>
       <span class="grow"></span>
-      ${lobby ? `<button class="btn ok" id="btn-begin">▶ 開始第一題</button>` : `
-      <button class="btn ghost sm" id="btn-prev" ${s.index === 0 ? "disabled" : ""}>◀ 上一頁</button>
-      <button class="btn sm" id="btn-next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>`}
+      <button class="btn ghost sm" id="btn-qr">📱 QR Code</button>
+      <button class="btn ghost sm" id="btn-classview">🖥️ 上課畫面</button>
     </div>
+    <div class="card" id="pv-controls">${controlBarHtml(s)}</div>
     <div class="live">
       <div>
-        ${lobby ? `<div class="card"><h3 style="margin:0 0 6px">🚪 等待室</h3>
-          <p class="muted" style="margin:0">學生加入後只會看到「等老師開始」，看不到題目。大家到齊後，按右上角「▶ 開始第一題」。</p></div>` : ""}
-        <div class="card mini-q">
-          ${lobby ? `<div class="muted small">第一頁預覽（只有你看得到）</div>` : ""}
-          <div class="prompt">${esc(a.prompt)}</div>
-          ${a.image ? `<img data-img="${esc(a.image)}" alt="" style="margin-top:8px">` : ""}
-          ${(a.options || []).length ? `<div class="small" style="margin-top:8px">${a.options.map((o, i) =>
-            `<span class="tag ${!safe && isAnswerOpt(i) ? "ok" : ""}" style="margin:2px">${LETTERS[i]}. ${esc(o)}</span>`).join("")}</div>` : ""}
-          ${a.type === "match" ? `<div class="small" style="margin-top:8px">${(a.left || []).map((l, i) =>
-            `<span class="tag" style="margin:2px">${esc(l)}${safe ? "" : ` → ${esc((act.right || [])[i] || "")}`}</span>`).join("")}</div>` : ""}
-        </div>
         <div class="card">
           <div class="row" style="margin-bottom:10px">
             <b>已加入 ${live.members.length} 人</b>
@@ -558,43 +719,25 @@ function renderLiveBody() {
             ${collecting ? `<span><i style="border-color:var(--wait);background:var(--wait-soft)"></i>未作答</span>
             <span><i style="border-color:var(--accent);background:var(--accent-soft)"></i>已作答</span>
             ${safe ? "" : `<span><i style="border-color:var(--ok);background:var(--ok-soft)"></i>答對</span>
-            ${a.type === "match" ? `<span><i style="border-color:var(--partial);background:var(--partial-soft)"></i>部分對</span>` : ""}
+            ${["match", "multi"].includes(a.type) ? `<span><i style="border-color:var(--partial);background:var(--partial-soft)"></i>部分對</span>` : ""}
             <span><i style="border-color:var(--bad);background:var(--bad-soft)"></i>答錯</span>`}` : ""}
             <span>點一下：選取投影｜長按：看答案｜★ 被抽過</span>
           </div>
         </div>
+        <div class="card mini-q">
+          ${lobby ? `<div class="muted small">第一頁預覽（學生還看不到）</div>` : ""}
+          <div class="prompt">${esc(a.prompt)}</div>
+          ${a.image ? `<img data-img="${esc(a.image)}" alt="" style="margin-top:8px">` : ""}
+          ${(a.options || []).length ? `<div class="small" style="margin-top:8px">${a.options.map((o, i) =>
+            `<span class="tag ${!safe && isAnswerOpt(i) ? "ok" : ""}" style="margin:2px">${LETTERS[i]}. ${esc(o)}</span>`).join("")}</div>` : ""}
+          ${a.type === "match" ? `<div class="small" style="margin-top:8px">${(a.left || []).map((l, i) =>
+            `<span class="tag" style="margin:2px">${esc(l)}${safe ? "" : ` → ${esc((act.right || [])[i] || "")}`}</span>`).join("")}</div>` : ""}
+        </div>
       </div>
       <div class="panel">
-        ${isQ && preview ? `<div class="card">
-          <h3>作答</h3>
-          <p class="muted small" style="margin-top:0">題目已經在大螢幕上，學生平板顯示「請看大螢幕」。講解完再開放。</p>
-          <button class="btn ok big" data-state="answering">▶ 開放作答</button>
-        </div>` : ""}
-        ${collecting ? `<div class="card">
-          <h3>作答</h3>
-          <div class="ctrl-grid">
-            ${s.state === "answering"
-              ? `<button class="btn" data-state="locked">停止作答</button>`
-              : `<button class="btn secondary" data-state="answering">重新開放作答</button>`}
-            ${s.state === "revealed"
-              ? `<button class="btn ghost" data-state="locked">收回答案</button>`
-              : `<button class="btn ok" data-state="revealed">公布答案</button>`}
-          </div>
-          ${bars}
-        </div>` : ""}
-        <div class="card">
-          <h3>大螢幕顯示</h3>
-          <div class="row">
-            ${projBtn("join", "加入 QR")}
-            ${projBtn("question", "題目")}
-            ${["choice", "multi", "match"].includes(a.type) ? projBtn("chart", "統計圖") : ""}
-            ${isQ ? projBtn("answers", `並排答案（${live.selected.length}）`) : ""}
-            ${projBtn("blank", "遮蔽")}
-          </div>
-          <div class="row" style="margin-top:10px">
-            <button class="btn ghost sm" id="btn-embed">📺 在這台 iPad 切到投影畫面</button>
-            <button class="btn ghost sm" id="btn-screen-link">投影電腦網址</button>
-          </div>
+        ${collecting && bars ? `<div class="card"><h3>統計 <span class="muted small">（只有你看得到）</span></h3>${bars}</div>` : ""}
+        <div class="card">${displayBarHtml(s)}
+          <div class="row" style="margin-top:10px"><button class="btn ghost sm" id="btn-screen-link">投影電腦網址</button></div>
         </div>
         ${collecting ? `<div class="card">
           <h3>挑答案討論 <span class="muted small">（選了 ${live.selected.length} 份）</span></h3>
@@ -618,15 +761,9 @@ function renderLiveBody() {
     pressable(el, () => { const m = bySeat.get(seat); if (m) toggleSelect(m.uid); }, () => detail(seat));
   });
   root.querySelectorAll(".ans[data-uid]").forEach((el) => el.onclick = () => toggleSelect(el.dataset.uid));
-  root.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => setState(b.dataset.state));
-  root.querySelectorAll("[data-proj]").forEach((b) => b.onclick = () => setProjection(b.dataset.proj));
-  if (lobby) $("#btn-begin").onclick = () => goTo(0);
-  else {
-    $("#btn-prev").onclick = () => goTo(s.index - 1);
-    $("#btn-next").onclick = () => goTo(s.index + 1);
-  }
-  $("#btn-embed").onclick = openEmbed;
+  bindControls(root, s);
   $("#btn-qr").onclick = () => showJoinQr(s.code);
+  $("#btn-classview").onclick = () => setLiveView("class");
   $("#btn-screen-link").onclick = () => {
     const url = new URL("screen.html", location.href).href;
     modal(`<h2>投影電腦</h2><p>在教室電腦打開這個網址，用同一個老師帳號登入，畫面會自動跟著這堂課：</p>
@@ -636,15 +773,7 @@ function renderLiveBody() {
   const pick = $("#btn-pick"); if (pick) pick.onclick = () => randomPick(false);
   const pw = $("#btn-pick-wrong"); if (pw) pw.onclick = () => randomPick(true);
   const cs = $("#btn-clear-sel"); if (cs) cs.onclick = () => { live.selected = []; renderLiveBody(); };
-  $("#btn-leave").onclick = () => { leaveSession(); renderLive(); };
-  $("#btn-end").onclick = async () => {
-    if (!confirm("結束這堂課？學生的作答資料會一併清除。")) return;
-    const code = live.code;
-    leaveSession();
-    await endSession(code);
-    toast("課堂已結束");
-    renderLive();
-  };
+  bindLeaveEnd();
 }
 
 // ---- 在老師的螢幕上直接秀 QR Code（沒有投影時，拿著 iPad 給學生掃）----
