@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="課堂控制台">
+  <title>課堂控制台</title>
+  <script>
+    // 自動更新：網站有新版本時，強制下載最新檔案（不必等瀏覽器暫存過期）
+    (async () => {
+      try {
+        const r = await fetch("version.json", { cache: "no-store" });
+        const v = String((await r.json()).v);
+        window.APP_VERSION = v;
+        const old = localStorage.getItem("appVersion");
+        if (old === v) return;
+        const files = ["index.html", "teacher.html", "screen.html", "css/style.css", "js/config.js", "js/firebase.js",
+          "js/projection.js", "js/student.js", "js/teacher.js", "js/textsize.js"];
+        await Promise.all(files.map((f) => fetch(f, { cache: "reload" }).catch(() => {})));
+        localStorage.setItem("appVersion", v);
+        // 確定有記住新版本才重新整理一次（無法儲存時不重整，避免一直重新整理）
+        if (localStorage.getItem("appVersion") === v) location.reload();
+      } catch (e) { /* 離線或讀不到就照常使用 */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body class="teacher">
+  <div id="v-loading" class="wrap"><div class="card center muted">載入中…</div></div>
+
+  <div id="v-login" class="wrap hidden">
+    <div class="card">
+      <h1>老師控制台</h1>
+      <p class="muted">請用老師的 Google 帳號登入。</p>
+      <button class="btn big" id="btn-login">用 Google 帳號登入</button>
+      <p class="status-bar bad hidden" id="login-err"></p>
+    </div>
+  </div>
+
+  <div id="v-app" class="hidden">
+    <div class="t-header" id="t-header">
+      <span class="title">課堂控制台</span>
+      <div class="tabs">
+        <button data-tab="live" class="active">上課</button>
+        <button data-tab="lessons">課程</button>
+        <button data-tab="classes">班級</button>
+      </div>
+      <span class="grow"></span>
+      <span id="textsize-mount"></span>
+      <button class="btn ghost sm" id="btn-safe" title="iPad 鏡像投影時打開：隱藏姓名與對錯">🛡 鏡像安全模式：關</button>
+      <button class="btn ghost sm" id="btn-logout">登出</button>
+      <span class="muted small" id="app-version"></span>
+    </div>
+    <div class="t-main">
+      <section id="tab-live"></section>
+      <section id="tab-lessons" class="hidden"></section>
+      <section id="tab-classes" class="hidden"></section>
+    </div>
+  </div>
+
+  <div id="screen-embed" class="screen-embed hidden">
+    <div class="screen-root" id="embed-root"></div>
+    <button class="btn secondary sm exit" id="btn-embed-exit">回控制台</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script type="module" src="js/teacher.js"></script>
+</body>
+</html>
