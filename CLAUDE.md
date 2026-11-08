@@ -22,7 +22,7 @@
 - 純前端：HTML ＋ JavaScript 模組，**沒有建置步驟**，不用 npm。Firebase SDK 從 gstatic CDN 載入（10.12.2）。
 - **Firebase**：專案 `cloud-classroom-b46d8`。Google 登入＋匿名登入（「用座號進入」的備用方案），Firestore 位置在 asia-east1。
 - **網站**：GitHub Pages，從 `main` 分支的根目錄發布。**推到 main 就會上線**，約 1 分鐘生效。瀏覽器會暫存舊檔最多 10 分鐘，請老師重新整理（電腦按 Ctrl+F5，iPad 把控制台關掉重開）。
-- 老師帳號：0223cloud@gmail.com（`js/config.js` 的 `TEACHER_EMAILS`，以及 `firestore.rules` 的 `isTeacher()`，兩邊要一致）。
+- 老師帳號：見 `js/config.js` 的 `TEACHER_EMAILS`，以及 `firestore.rules` 的 `isTeacher()`，兩邊要一致。
 
 ### 檔案
 

@@ -39,7 +39,7 @@
 
 ## 安全與隱私
 
-- 只有 0223cloud@gmail.com 能進老師控制台（名單在 `js/config.js` 和 `firestore.rules`）。
+- 只有授權的老師帳號能進老師控制台（名單在 `js/config.js` 和 `firestore.rules`）。
 - 學生只能看到、寫入自己的答案；只有「作答中」才能送出。
 - 只保存班級、座號、姓名；作答資料在下課時刪除。
 - Firebase 是免費 Spark 方案，沒有綁信用卡，不會產生費用。
