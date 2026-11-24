@@ -245,3 +245,32 @@ body.screen { background: #fbfaf7; font-size: 28px; overflow: hidden; }
 .shared-card .lbl { font-size: .85rem; color: var(--accent); font-weight: 700; }
 .shared-card .txt { white-space: pre-wrap; }
 .shared .bar-row { margin-bottom: 6px; }
+
+/* ---- 隨機派題（分組配對）---- */
+.deal-card { margin: 14px 0; padding: 18px 16px; border-radius: var(--radius); background: linear-gradient(135deg, #fff8e6, #fdeccb);
+  border: 2px solid var(--wait); box-shadow: var(--shadow); text-align: center; }
+.deal-card .deal-label { font-size: .85rem; color: var(--wait); font-weight: 700; margin-bottom: 8px; }
+.deal-card .deal-text { font-size: 1.35rem; font-weight: 700; line-height: 1.6; white-space: pre-wrap; }
+.deal-card.flip { animation: deal-flip .7s ease-out; }
+@keyframes deal-flip {
+  0% { transform: perspective(700px) rotateY(90deg) scale(.9); opacity: 0; }
+  60% { transform: perspective(700px) rotateY(-12deg) scale(1.03); opacity: 1; }
+  100% { transform: perspective(700px) rotateY(0) scale(1); }
+}
+.deal-reveal { display: grid; gap: 8px; margin-top: 12px; }
+.deal-rg { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.deal-rg.me { border-color: var(--ok); background: var(--ok-soft); }
+.deal-group { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; }
+.deal-group.done { border-color: var(--ok); background: var(--ok-soft); }
+.deal-mem { display: inline-block; margin: 2px 10px 2px 0; }
+.s-deal-count { font-size: 1.3em; margin: .4em 0; }
+.s-deal-count b { color: var(--accent); font-size: 1.4em; }
+.s-deal-chips { display: flex; flex-wrap: wrap; gap: .4em; font-size: .8em; }
+.s-deal-chips span { padding: .25em .7em; border-radius: 999px; background: var(--wait-soft); border: 1px solid var(--wait); }
+.s-deal-chips span.ok { background: var(--ok-soft); border-color: var(--ok); }
+.s-deal-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(9em, 1fr)); gap: .5em; font-size: .8em; }
+.s-deal-g { padding: .5em .7em; border-radius: 12px; background: var(--card); border: 2px solid var(--accent); }
+.s-deal-g .lbl { color: var(--accent); font-weight: 700; }
+.s-deal-g .nm { font-weight: 700; margin: .2em 0; }
+.s-deal-g .seats { display: flex; flex-wrap: wrap; gap: .3em; }
+.s-deal-g .seats span { padding: 0 .45em; border-radius: 6px; background: var(--accent-soft); }

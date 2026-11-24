@@ -48,6 +48,17 @@ service cloud.firestore {
         allow delete: if isTeacher();
       }
 
+      // 隨機派題：每位學生的題卡，只有本人和老師讀得到；只有老師能寫
+      match /deals/{rid} {
+        allow read: if isTeacher() || (signedIn() && rid.matches(request.auth.uid + '_[0-9]+'));
+        allow write: if isTeacher();
+      }
+
+      // 隨機派題：分組結果，只有老師讀寫（學生查不到誰和誰同一組）
+      match /dealkeys/{rid} {
+        allow read, write: if isTeacher();
+      }
+
       match /responses/{rid} {
         allow read: if isTeacher() || (signedIn() && rid.matches(request.auth.uid + '_[0-9]+'));
         // 學生只能在「作答中」寫自己這一題的答案

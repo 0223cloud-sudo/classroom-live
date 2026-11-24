@@ -16,7 +16,7 @@
         const old = localStorage.getItem("appVersion");
         if (old === v) return;
         const files = ["index.html", "teacher.html", "screen.html", "css/style.css", "js/config.js", "js/firebase.js",
-          "js/projection.js", "js/student.js", "js/teacher.js", "js/textsize.js"];
+          "js/projection.js", "js/student.js", "js/teacher.js", "js/textsize.js", "js/deal.js"];
         await Promise.all(files.map((f) => fetch(f, { cache: "reload" }).catch(() => {})));
         localStorage.setItem("appVersion", v);
         // 確定有記住新版本才重新整理一次（無法儲存時不重整，避免一直重新整理）

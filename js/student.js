@@ -5,6 +5,7 @@ import {
 } from "./firebase.js";
 import { ALLOW_SEAT_LOGIN } from "./config.js";
 import { initTextSize } from "./textsize.js";
+import { parseSeats, resultText } from "./deal.js";
 
 initTextSize("student", document.getElementById("textsize-mount"), { baseWidth: 1000, min: 1.15 });
 
@@ -24,6 +25,8 @@ let session = null;
 let renderKey = "";
 let mine = null;     // 我這一題已送出的答案
 let draft = { choice: null, text: "" };
+// 隨機派題：我自己的題卡（只有我和老師讀得到）
+let myDeal = null, dealUnsub = null, dealIdx = -1, dealSeenKey = "";
 
 if (ALLOW_SEAT_LOGIN) $("#seat-login").classList.remove("hidden");
 
@@ -154,8 +157,83 @@ async function onSession() {
       draft = { choice: mine.choice ?? null, text: mine.text || "", match: mine.match || [], multi: mine.multi || [] };
     }
   }
+  watchDeal(s);
   render();
   show("v-activity");
+}
+
+// 這一頁是隨機派題時，即時接收自己的題卡和配對結果
+function watchDeal(s) {
+  const want = s.activity?.type === "deal" ? s.index : -1;
+  if (want === dealIdx) return;
+  if (dealUnsub) { dealUnsub(); dealUnsub = null; }
+  dealIdx = want; myDeal = null;
+  if (want < 0) return;
+  dealUnsub = onSnapshot(doc(db, "sessions", code, "deals", `${user.uid}_${want}`), (d) => {
+    myDeal = d.exists() ? d.data() : null;
+    if (session?.index === want) render();
+  }, () => { myDeal = null; });
+}
+
+function renderDeal(card) {
+  const s = session, a = s.activity || {};
+  const open = s.state === "answering";
+  const revealed = s.state === "revealed";
+  let html = `<div class="muted small">第 ${s.index + 1} / ${s.total} 頁</div>
+    <div class="prompt">${esc(a.prompt)}</div>`;
+  if (!myDeal) {
+    html += open || s.state === "locked"
+      ? `<div class="status-bar wait">老師還沒發題卡給你，請舉手告訴老師 🙋</div>`
+      : "";
+  } else {
+    // 第一次看到題卡時有翻牌動畫
+    const key = `${s.index}|${myDeal.text}`;
+    const flip = dealSeenKey !== key; dealSeenKey = key;
+    html += `<div class="deal-card ${flip ? "flip" : ""}"><div class="deal-label">🎴 你的題卡（不要給別人看）</div>
+      <div class="deal-text">${esc(myDeal.text)}</div></div>`;
+    if (!revealed) {
+      html += `<label class="field"><span>找到的組員座號（不用寫自己，用逗號或空白隔開）</span>
+        <input type="text" id="deal-seats" inputmode="numeric" placeholder="例如：3, 12, 25" value="${esc(draft.text)}" ${open ? "" : "disabled"}></label>`;
+      if (open) html += `<button class="btn big" id="btn-submit">${mine ? "重新送出" : "送出組員座號"}</button>`;
+      const r = myDeal.result;
+      if (r) html += `<div class="status-bar ${r.ok ? "ok" : "bad"}">${esc(resultText(r))}</div>`;
+      else if (mine) html += `<div class="status-bar wait">已送出，檢查中…</div>`;
+      if (!open) html += `<div class="status-bar wait">老師已停止配對，等待公布分組</div>`;
+    }
+  }
+  if (revealed) {
+    const groups = s.reveal?.groups || [];
+    const my = groups.findIndex((g) => (g.seats || []).includes(profile.seat));
+    if (my >= 0) html += `<div class="status-bar ok">你是第 ${my + 1} 組：${esc(groups[my].name)}</div>`;
+    html += `<div class="deal-reveal">${groups.map((g, i) => `<div class="deal-rg ${i === my ? "me" : ""}">
+      <b>第 ${i + 1} 組</b>　${esc(g.name)}<div class="small muted">座號：${(g.seats || []).join("、")}</div></div>`).join("")}</div>`;
+    if (s.reveal?.explanation) html += `<div class="explain">${esc(s.reveal.explanation)}</div>`;
+  }
+  card.innerHTML = html;
+  const inp = $("#deal-seats");
+  if (inp) inp.oninput = () => { draft.text = inp.value; };
+  const sb = $("#btn-submit");
+  if (sb) sb.onclick = () => submitDeal();
+}
+
+async function submitDeal() {
+  const s = session;
+  const mates = parseSeats(draft.text).filter((n) => n !== profile.seat);
+  if (!mates.length) return toast("請輸入至少一位組員的座號");
+  const data = {
+    uid: user.uid, index: s.index, seat: profile.seat, name: profile.name,
+    choice: null, text: mates.join(", "), mates, at: serverTimestamp(),
+  };
+  const btn = $("#btn-submit"); if (btn) btn.disabled = true;
+  try {
+    await setDoc(doc(db, "sessions", code, "responses", `${user.uid}_${s.index}`), data);
+    mine = data; draft.text = data.text;
+    toast("已送出 ✓");
+    render();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toast("送出失敗，可能老師已停止配對");
+  }
 }
 
 // ---- 作答畫面 ----
@@ -194,6 +272,8 @@ function render() {
       <p class="muted">老師說明完，就會開放作答</p></div>`;
     return;
   }
+
+  if (a.type === "deal") return renderDeal(card);
 
   if (a.type === "slide") {
     html += `<div class="status-bar info">請看老師的投影 👀</div>`;

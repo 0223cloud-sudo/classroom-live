@@ -6,6 +6,7 @@ import {
 } from "./firebase.js";
 import { renderScreen, qrSvg } from "./projection.js";
 import { initTextSize } from "./textsize.js";
+import { dealCards, addLate, checkMates, parseSeats, parseCards, cardsToText } from "./deal.js";
 
 // 介面跟著視窗寬度自動放大，大螢幕不會縮在角落
 initTextSize("teacher", document.getElementById("textsize-mount"), { baseWidth: 1250, min: window.innerWidth < 600 ? 1 : 1.15 });
@@ -118,6 +119,8 @@ function applySafe() {
 const live = {
   code: null, session: null, lesson: null, members: [], responses: [], roster: [],
   selected: [], unsubs: [], unsubResp: null, respIndex: -1, writeTimer: null,
+  // 隨機派題：dealKey＝分組結果（只有老師讀得到），dealDocs＝每位學生的題卡
+  dealKey: null, dealDocs: {}, unsubDeal: [], dealTimer: null,
 };
 
 const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -248,6 +251,7 @@ async function enterSession(code, presetSession, presetLesson) {
     live.members = qs.docs.map((d) => d.data());
     renderLiveBody();
     scheduleProjectionStats();
+    scheduleDealSync();
   }));
 }
 
@@ -262,7 +266,160 @@ function subscribeResponses() {
       live.responses = qs.docs.map((d) => d.data());
       renderLiveBody();
       scheduleProjectionStats();
+      scheduleDealSync();
     });
+  subscribeDeal();
+}
+
+// ---- 隨機派題 ----
+function subscribeDeal() {
+  live.unsubDeal.forEach((u) => u());
+  live.unsubDeal = [];
+  live.dealKey = null; live.dealDocs = {};
+  if (currentAct().type !== "deal") return;
+  const idx = live.respIndex;
+  live.unsubDeal.push(onSnapshot(doc(db, "sessions", live.code, "dealkeys", String(idx)), (d) => {
+    live.dealKey = d.exists() ? d.data() : null;
+    renderLiveBody(); scheduleDealSync();
+  }, () => toast("讀不到派題資料：請確認 Firebase 安全規則已更新")));
+  live.unsubDeal.push(onSnapshot(query(collection(db, "sessions", live.code, "deals"), where("index", "==", idx)), (qs) => {
+    live.dealDocs = Object.fromEntries(qs.docs.map((d) => [d.data().uid, d.data()]));
+    renderLiveBody(); scheduleDealSync();
+  }, () => {}));
+}
+
+const seatOfUid = (uid) => live.members.find((m) => m.uid === uid)?.seat ?? -1;
+
+// 每位學生找組員的結果，以及每一組是否全員配對成功
+function dealStatus() {
+  const groups = live.dealKey?.groups || [];
+  const results = {};
+  live.responses.forEach((r) => {
+    const res = checkMates(groups, r.uid, r.mates || parseSeats(r.text), seatOfUid);
+    if (res) results[r.uid] = res;
+  });
+  const done = groups.map((g) => g.uids.length > 0 && g.uids.every((u) => results[u]?.ok));
+  const dealt = new Set(groups.flatMap((g) => g.uids));
+  const undealt = live.members.filter((m) => !dealt.has(m.uid));
+  return { groups, results, done, undealt };
+}
+
+// 把檢查結果寫回學生的題卡（學生平板會即時顯示），並更新大螢幕的配對進度
+function scheduleDealSync() {
+  if (currentAct().type !== "deal" || !live.dealKey) return;
+  clearTimeout(live.dealTimer);
+  live.dealTimer = setTimeout(async () => {
+    if (!live.code || currentAct().type !== "deal" || !live.dealKey) return;
+    const idx = live.session.index;
+    const { groups, results, done } = dealStatus();
+    const b = writeBatch(db);
+    let n = 0;
+    for (const [uid, d] of Object.entries(live.dealDocs)) {
+      const want = results[uid] || null;
+      if (JSON.stringify(want) !== JSON.stringify(d.result ?? null)) {
+        b.update(doc(db, "sessions", live.code, "deals", `${uid}_${idx}`), { result: want }); n++;
+      }
+    }
+    const board = { index: idx, total: groups.length, done: done.filter(Boolean).length, groups: done };
+    if (JSON.stringify(board) !== JSON.stringify(live.session.dealBoard || null)) {
+      b.update(doc(db, "sessions", live.code), { dealBoard: board }); n++;
+    }
+    if (n) await b.commit().catch((e) => toast("更新配對結果失敗：" + (e.code || e.message)));
+  }, 400);
+}
+
+// 按「派題」：選要分幾組，然後隨機發題卡
+function askDeal() {
+  const a = currentAct(), cards = a.cards || [];
+  if (!cards.length) return toast("這一頁還沒有題卡，請先到課程編輯器輸入");
+  if (!live.members.length) return toast("還沒有學生加入課堂");
+  const n = live.members.length;
+  const def = Math.max(1, Math.min(cards.length, Math.floor(n / 2) || 1));
+  const opts = cards.map((_, k) => k + 1).map((g) =>
+    `<option value="${g}" ${g === def ? "selected" : ""}>${g} 組（每組約 ${Math.round(n / g * 10) / 10} 人）</option>`).join("");
+  const again = !!live.dealKey;
+  const m = modal(`<h2>🎴 隨機派題</h2>
+    <p>目前有 <b>${n}</b> 位學生在課堂裡，題卡共 <b>${cards.length}</b> 張。</p>
+    <label class="field"><span>要分成幾組？</span><select id="deal-n">${opts}</select></label>
+    <p class="muted small">會用前面幾張題卡。每位學生只會在自己的平板看到自己的題卡。</p>
+    ${again ? `<p class="status-bar bad">這一頁已經派過題了。重新派題會清掉原本的分組和學生送出的組員座號。</p>` : ""}
+    <div class="ctrl-grid" style="margin-top:12px">
+      <button class="btn ok" data-c="go">${again ? "重新派題並開始" : "派題並開始找組員"}</button>
+      ${again ? `<button class="btn secondary" data-c="keep">沿用原本的分組</button>` : `<button class="btn ghost" data-c="no">取消</button>`}
+    </div>`);
+  m.querySelector("[data-c=go]").onclick = async () => {
+    const g = Number(m.querySelector("#deal-n").value);
+    m.remove();
+    await doDeal(g);
+    setState("answering");
+  };
+  const keep = m.querySelector("[data-c=keep]");
+  if (keep) keep.onclick = () => { m.remove(); setState("answering"); };
+  const no = m.querySelector("[data-c=no]");
+  if (no) no.onclick = () => m.remove();
+}
+
+async function doDeal(groupCount) {
+  const a = currentAct(), idx = live.session.index, code = live.code;
+  const { groups, texts } = dealCards(a.cards || [], live.members, groupCount);
+  try {
+    // 清掉這一頁之前的題卡與作答（重新派題時）
+    const [oldDeals, oldResp] = await Promise.all([
+      getDocs(query(collection(db, "sessions", code, "deals"), where("index", "==", idx))),
+      getDocs(query(collection(db, "sessions", code, "responses"), where("index", "==", idx))),
+    ]);
+    const b = writeBatch(db);
+    [...oldDeals.docs, ...oldResp.docs].forEach((d) => b.delete(d.ref));
+    b.set(doc(db, "sessions", code, "dealkeys", String(idx)), { index: idx, groups });
+    Object.entries(texts).forEach(([uid, text]) =>
+      b.set(doc(db, "sessions", code, "deals", `${uid}_${idx}`), { uid, index: idx, text, result: null }));
+    b.update(doc(db, "sessions", code), { dealBoard: { index: idx, total: groups.length, done: 0, groups: groups.map(() => false) } });
+    await b.commit();
+    toast(`已派題：${groups.length} 組、${Object.keys(texts).length} 人`);
+  } catch (e) {
+    toast("派題失敗：" + (e.code || e.message) + "（可能是 Firebase 安全規則還沒更新）");
+  }
+}
+
+// 晚到的學生：補發題卡到人數最少的組
+async function dealLate() {
+  const { undealt } = dealStatus();
+  if (!live.dealKey || !undealt.length) return toast("沒有需要補發的同學");
+  const a = currentAct(), idx = live.session.index, code = live.code;
+  const groups = live.dealKey.groups.map((g) => ({ ...g, uids: [...g.uids] }));
+  const texts = Object.fromEntries(Object.entries(live.dealDocs).map(([u, d]) => [u, d.text]));
+  const b = writeBatch(db);
+  for (const m of undealt) {
+    const { text } = addLate(a.cards || [], groups, m.uid, texts);
+    texts[m.uid] = text;
+    b.set(doc(db, "sessions", code, "deals", `${m.uid}_${idx}`), { uid: m.uid, index: idx, text, result: null });
+  }
+  b.set(doc(db, "sessions", code, "dealkeys", String(idx)), { index: idx, groups });
+  await b.commit().then(() => toast(`已補發 ${undealt.length} 位同學的題卡`))
+    .catch((e) => toast("補發失敗：" + (e.code || e.message)));
+}
+
+// 完整控制台：分組狀況（有姓名，只有老師看得到）
+function dealPanelHtml() {
+  const { groups, results, done, undealt } = dealStatus();
+  const nameOf = (uid) => { const m = live.members.find((x) => x.uid === uid); return m ? `${m.seat} 號${safe ? "" : " " + esc(m.name)}` : "（已離開）"; };
+  const mark = (uid) => { const r = results[uid]; return !r ? "⌛" : r.ok ? "✅" : "❌"; };
+  return `<div class="card">
+    <h3>🎴 分組狀況 <span class="muted small">（只有你看得到）</span></h3>
+    ${!groups.length ? `<p class="muted">還沒派題。按上方「派題」開始。</p>` : `
+      <div class="muted small" style="margin-bottom:6px">已完成 ${done.filter(Boolean).length} / ${groups.length} 組｜✅ 找齊　❌ 找錯或還沒找齊　⌛ 還沒送出</div>
+      ${groups.map((g, i) => `<div class="deal-group ${done[i] ? "done" : ""}">
+        <div><b>第 ${i + 1} 組</b>${safe ? "" : `　<span class="small">${esc(g.name)}</span>`} ${done[i] ? `<span class="tag ok">完成</span>` : ""}</div>
+        <div class="small">${g.uids.map((u) => `<span class="deal-mem">${mark(u)} ${nameOf(u)}${safe ? "" : `<span class="muted">（${esc(live.dealDocs[u]?.text || "")}）</span>`}</span>`).join("")}</div>
+      </div>`).join("")}`}
+    ${groups.length && undealt.length ? `<div class="status-bar wait" style="margin-top:8px">還沒拿到題卡：${undealt.map((m) => m.seat + " 號").join("、")}
+      <button class="btn sm" id="btn-deal-late" style="margin-left:8px">補發題卡</button></div>` : ""}
+    ${groups.length ? `<div class="row" style="margin-top:8px"><button class="btn ghost sm" id="btn-redeal">重新派題</button></div>` : ""}
+  </div>`;
+}
+function bindDealPanel(root) {
+  const late = root.querySelector("#btn-deal-late"); if (late) late.onclick = dealLate;
+  const re = root.querySelector("#btn-redeal"); if (re) re.onclick = askDeal;
 }
 
 function leaveSession() {
@@ -270,6 +427,8 @@ function leaveSession() {
   live.unsubs = [];
   if (live.unsubResp) live.unsubResp();
   live.unsubResp = null;
+  live.unsubDeal.forEach((u) => u());
+  live.unsubDeal = []; live.dealKey = null; live.dealDocs = {};
   live.respIndex = -1;
   live.code = null; live.session = null; live.members = []; live.responses = [];
 }
@@ -277,7 +436,7 @@ function leaveSession() {
 async function endSession(code) {
   await updateDoc(doc(db, "sessions", code), { active: false });
   // 作答資料不長期保存：結束時一併清除
-  for (const sub of ["responses", "members"]) {
+  for (const sub of ["responses", "members", "deals", "dealkeys"]) {
     const qs = await getDocs(collection(db, "sessions", code, sub));
     for (let i = 0; i < qs.docs.length; i += 400) {
       const b = writeBatch(db);
@@ -316,6 +475,7 @@ function multiHtml(r, showMissing = false) {
 
 function isCorrect(r) {
   const a = currentAct();
+  if (a.type === "deal") { const res = dealStatus().results[r.uid]; return res ? res.ok : null; }
   if (a.type === "multi") { const sc = multiScore(r); return sc.total ? sc.hits === sc.total && sc.wrong === 0 : null; }
   if (a.type === "match") { const sc = matchScore(r); return sc.total ? sc.ok === sc.total : null; }
   if (a.type !== "choice" || a.answer == null || r.choice == null) return null;
@@ -412,6 +572,12 @@ function setState(state) {
     patch.reveal = { answer: a.type === "choice" && a.answer != null ? a.answer : null, explanation: a.explanation || "" };
     if (a.type === "match") patch.reveal.pairs = (a.right || []).slice(0, (a.left || []).length);
     if (a.type === "multi") patch.reveal.answers = a.answers || [];
+    if (a.type === "deal") {
+      // 公布分組：每一組的題卡名稱和座號
+      patch.reveal.groups = (live.dealKey?.groups || []).map((g) => ({
+        name: g.name, seats: g.uids.map(seatOfUid).filter((n) => n > 0).sort((x, y) => x - y),
+      }));
+    }
     // 公布答案時，大螢幕自動切到題目＋正確答案（想再看統計可以再按「統計」）
     patch.projection = { mode: "question" };
   } else {
@@ -523,9 +689,14 @@ function liveInfo(s) {
 
 // 兩種畫面共用的操作按鈕（照上課步驟只顯示下一步要按的）
 function controlBarHtml(s) {
-  const { isQ, lobby, preview } = liveInfo(s);
+  const { isQ, lobby, preview, a } = liveInfo(s);
+  const deal = a.type === "deal";
   let main = "";
   if (lobby) main = `<button class="btn ok xl" data-ctl="begin">▶ 開始第一題</button>`;
+  else if (deal && preview) main = `<button class="btn ok xl" data-ctl="deal">🎴 派題，開始找組員</button>`;
+  else if (deal && s.state === "answering") main = `<button class="btn xl" data-ctl="stop">⏹ 停止配對</button>`;
+  else if (deal && s.state === "locked") main = `<button class="btn ok xl" data-ctl="reveal">✅ 公布分組</button>
+    <button class="btn ghost" data-ctl="reopen">繼續配對</button>`;
   else if (isQ && preview) main = `<button class="btn ok xl" data-ctl="open">▶ 開放作答</button>`;
   else if (isQ && s.state === "answering") main = `<button class="btn xl" data-ctl="stop">⏹ 停止作答</button>`;
   else if (isQ && s.state === "locked") main = `<button class="btn ok xl" data-ctl="reveal">✅ 公布答案</button>
@@ -536,7 +707,7 @@ function controlBarHtml(s) {
     ${main}
     ${lobby ? "" : `<button class="btn secondary" data-ctl="next" ${s.index + 1 >= s.total ? "disabled" : ""}>下一頁 ▶</button>`}
     <span class="grow"></span>
-    ${isQ || lobby ? `<button class="btn ghost sm" data-ctl="lock" title="開：學生送出後就不能改答案">🔒 送出後鎖定：${s.lock ? "開" : "關"}</button>` : ""}
+    ${(isQ && !deal) || lobby ? `<button class="btn ghost sm" data-ctl="lock" title="開：學生送出後就不能改答案">🔒 送出後鎖定：${s.lock ? "開" : "關"}</button>` : ""}
   </div>`;
 }
 
@@ -558,7 +729,7 @@ function displayBarHtml(s) {
     ${b("join", "📱 加入 QR")}
     ${b("blank", "⬛ 遮蔽")}
   </div>
-  ${isQ ? `<div class="row" style="margin-top:8px">
+  ${isQ && a.type !== "deal" ? `<div class="row" style="margin-top:8px">
     <span class="muted small">討論：</span>
     <button class="btn secondary sm ${kind === "ideas" ? "on" : ""}" data-ctl="ideas" ${ok ? "" : "disabled"} title="${closed ? "挑幾份答案不一樣的想法並排" : wait}">💬 看看大家的想法</button>
     ${hasAnswerKey() ? `<button class="btn secondary sm ${kind === "wrong" ? "on" : ""}" data-ctl="wrongideas" ${ok ? "" : "disabled"} title="${closed ? "只抽答錯的，一律匿名" : wait}">🎭 看看答錯的原因</button>` : ""}
@@ -578,6 +749,8 @@ function bindControls(root, s) {
     else if (c === "stop" || c === "unreveal") setState("locked");
     else if (c === "reveal") setState("revealed");
     else if (c === "lock") toggleLock();
+    else if (c === "deal") askDeal();
+    else if (c === "deallate") dealLate();
     else if (c === "ideas") pickIdeas("ideas");
     else if (c === "wrongideas") pickIdeas("wrong");
     else if (c === "names") { setPref("ideaNamed", ideaNamed() ? "0" : "1"); live.cvKey = null; renderLiveBody(); }
@@ -663,7 +836,7 @@ function renderClassView() {
   const s = live.session;
   const { collecting, stateTag, lobby } = liveInfo(s);
   // 題目區只在題目或狀態改變時重畫，學生交卷時只更新下方座號，畫面不會閃
-  const key = JSON.stringify([s.index, s.state, s.projection, s.activity, s.reveal]);
+  const key = JSON.stringify([s.index, s.state, s.projection, s.activity, s.reveal, s.dealBoard || null]);
   if (live.cvKey !== key || !root.querySelector(".classview")) {
     live.cvKey = key;
     root.innerHTML = `<div class="classview">
@@ -696,9 +869,16 @@ function renderClassView() {
     const cls = !m ? "" : collecting && answered.has(m.uid) ? "done" : "in";
     dots += `<span class="dot ${cls}">${n}</span>`;
   }
+  let dealInfo = "";
+  if (s.activity?.type === "deal" && live.dealKey) {
+    const { done, undealt } = dealStatus();
+    dealInfo = `<div class="row" style="margin-top:6px"><b>🎴 已完成配對 ${done.filter(Boolean).length} / ${done.length} 組</b>
+      ${undealt.length ? `<span class="muted small">${undealt.length} 人還沒拿到題卡</span><button class="btn sm" data-ctl="deallate">補發題卡</button>` : ""}</div>`;
+  }
   $("#cv-strip").innerHTML = `<div class="cv-strip">
     <b>${collecting ? `已交 ${live.responses.length} / ${live.members.length}` : `已加入 ${live.members.length} 人`}</b>
-    <div class="dots">${dots}</div></div>`;
+    <div class="dots">${dots}</div>${dealInfo}</div>`;
+  bindControls($("#cv-strip"), s);
   const ctl = $("#cv-controls");
   ctl.innerHTML = controlBarHtml(s) + `<div style="margin-top:8px">${displayBarHtml(s)}</div>`;
   bindControls(ctl, s);
@@ -819,12 +999,13 @@ function renderPrivateView() {
         </div>
       </div>
       <div class="panel">
+        ${a.type === "deal" ? dealPanelHtml() : ""}
         ${collecting && bars ? `<div class="card"><h3>統計 <span class="muted small">（只有你看得到）</span></h3>${bars}</div>` : ""}
         ${whoHtml(s)}
         <div class="card">${displayBarHtml(s)}
           <div class="row" style="margin-top:10px"><button class="btn ghost sm" id="btn-screen-link">投影電腦網址</button></div>
         </div>
-        ${collecting ? `<div class="card">
+        ${collecting && a.type !== "deal" ? `<div class="card">
           <h3>挑答案討論 <span class="muted small">（選了 ${live.selected.length} 份）</span></h3>
           <div class="row" style="margin-bottom:10px">
             <button class="btn secondary sm" id="btn-pick">🎲 隨機抽一位</button>
@@ -855,6 +1036,7 @@ function renderPrivateView() {
       <p style="word-break:break-all"><b>${esc(url)}</b></p>
       <button class="btn" onclick="this.closest('.modal').remove()">好</button>`);
   };
+  bindDealPanel(root);
   const pick = $("#btn-pick"); if (pick) pick.onclick = () => randomPick(false);
   const pw = $("#btn-pick-wrong"); if (pw) pw.onclick = () => randomPick(true);
   const cs = $("#btn-clear-sel"); if (cs) cs.onclick = () => { live.selected = []; renderLiveBody(); };
@@ -1057,7 +1239,7 @@ function askConflict() {
   });
 }
 
-const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", multi: "複選題", match: "配合題", text: "簡答題" };
+const TYPE_NAMES = { slide: "投影片（只展示）", choice: "選擇題", multi: "複選題", match: "配合題", text: "簡答題", deal: "隨機派題（分組配對）" };
 
 function renderEditor() {
   const root = $("#tab-lessons");
@@ -1078,6 +1260,7 @@ function renderEditor() {
       <button class="btn secondary sm" data-add="multi">＋ 複選題</button>
       <button class="btn secondary sm" data-add="match">＋ 配合題</button>
       <button class="btn secondary sm" data-add="text">＋ 簡答題</button>
+      <button class="btn secondary sm" data-add="deal">＋ 隨機派題</button>
     </div></div>`;
   loadImages(root);
 
@@ -1094,7 +1277,9 @@ function renderEditor() {
       ? { type: "choice", prompt: "", options: ["", "", "", ""], answer: null, askReason: true, explanation: "" }
       : t === "match" ? { type: "match", prompt: "", left: [], right: [], askReason: false, explanation: "" }
       : t === "multi" ? { type: "multi", prompt: "", options: ["", "", "", "", "", ""], answers: [], askReason: false, explanation: "" }
-      : t === "text" ? { type: "text", prompt: "", explanation: "" } : { type: "slide", prompt: "" });
+      : t === "text" ? { type: "text", prompt: "", explanation: "" }
+      : t === "deal" ? { type: "deal", prompt: "拿著 Chromebook 找到和你拿到「同一句」的組員！\n不能把螢幕給別人看，只能用自己的話說。", cards: [], explanation: "" }
+      : { type: "slide", prompt: "" });
     renderEditor();
     window.scrollTo(0, document.body.scrollHeight);
   });
@@ -1109,11 +1294,13 @@ function renderEditor() {
         else if (f === "left" || f === "right") a[f] = inp.value.split("\n");
         else if (f === "answer") a.answer = inp.value === "" ? null : Number(inp.value);
         else if (f === "askReason") a.askReason = inp.checked;
+        else if (f === "cards") a.cards = parseCards(inp.value);
         else if (f === "type") {
           a.type = inp.value;
           if (a.type === "choice" && !a.options) a.options = ["", "", "", ""];
           if (a.type === "match" && !a.left) { a.left = []; a.right = []; }
           if (a.type === "multi") { if (!a.options) a.options = ["", "", "", "", "", ""]; if (!a.answers) a.answers = []; }
+          if (a.type === "deal" && !a.cards) a.cards = [];
           renderEditor();
         }
         else a[f] = inp.value;
@@ -1191,6 +1378,10 @@ function actEditor(a, i) {
       <p class="muted small" style="margin-top:-6px">學生看到的右欄順序會自動打亂。</p>
       <label class="row" style="margin-bottom:10px"><input type="checkbox" data-f="askReason" ${a.askReason ? "checked" : ""} style="width:22px;height:22px">要學生寫理由</label>
       ${a.askReason ? `<label class="field"><span>理由欄的提示（可留空）</span><input type="text" data-f="reasonLabel" value="${esc(a.reasonLabel || "")}" placeholder="你是怎麼記住的？"></label>` : ""}` : ""}
+    ${a.type === "deal" ? `
+      <label class="field"><span>題卡：空一行分隔一張題卡；第一行是名稱（公布分組時才顯示），下面每一行是一種版本</span>
+        <textarea data-f="cards" style="min-height:260px" placeholder="急湍甚箭，猛浪若奔&#10;原句：急湍甚箭，猛浪若奔&#10;白話：湍急的水流比箭還快，洶湧的浪頭像奔馳的馬&#10;&#10;水皆縹碧，千丈見底&#10;原句：水皆縹碧，千丈見底&#10;白話：江水都是青白色的，深到千丈也看得見底">${esc(cardsToText(a.cards))}</textarea></label>
+      <p class="muted small" style="margin-top:-6px">上課時按「派題」，系統會把學生平均分組；同一組的人拿到同一張題卡的不同版本。學生找到組員後輸入組員座號，系統自動檢查。</p>` : ""}
     ${a.type !== "slide" ? `<label class="field"><span>公布答案時的說明（可留空）</span><textarea data-f="explanation" style="min-height:60px">${esc(a.explanation || "")}</textarea></label>` : ""}
   </div>`;
 }
@@ -1218,6 +1409,9 @@ async function saveLesson() {
       o.right = (a.right || []).map((x) => x.trim()).filter(Boolean);
       o.askReason = !!a.askReason;
       o.reasonLabel = a.reasonLabel || "";
+    }
+    if (a.type === "deal") {
+      o.cards = (a.cards || []).filter((c) => c.name).map((c) => ({ name: c.name, versions: (c.versions || []).filter(Boolean) }));
     }
     if (a.type !== "slide") o.explanation = a.explanation || "";
     return o;

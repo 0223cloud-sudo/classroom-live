@@ -69,6 +69,25 @@ export async function renderScreen(root, s) {
           ${it.pairs ? (a.left || []).map((l, k) => `<div class="pair">${esc(l)} → <b>${esc(it.pairs[k] || "？")}</b></div>`).join("") : ""}
           ${it.text ? `<div class="txt">${esc(it.text)}</div>` : ""}
         </div>`).join("")}</div>` : `<div class="muted">（老師還沒有挑選答案）</div>`}`;
+  } else if (a.type === "deal") {
+    // 隨機派題：作答中顯示配對進度，公布後顯示分組名單（不顯示誰拿到什麼版本）
+    const revealed = s.state === "revealed";
+    const groups = revealed ? s.reveal?.groups || [] : [];
+    const b = s.dealBoard && s.dealBoard.index === s.index ? s.dealBoard : null;
+    let inner;
+    if (revealed) {
+      inner = `<div class="s-deal-groups">${groups.map((g, i) => `<div class="s-deal-g">
+        <div class="lbl">第 ${i + 1} 組</div><div class="nm">${esc(g.name)}</div>
+        <div class="seats">${(g.seats || []).map((n) => `<span>${n}</span>`).join("")}</div></div>`).join("")}</div>`;
+    } else if (b) {
+      inner = `<div class="s-deal-count">已完成配對 <b>${b.done}</b> / ${b.total} 組</div>
+        <div class="s-deal-chips">${(b.groups || []).map((ok, i) => `<span class="${ok ? "ok" : ""}">${ok ? "✅" : "⌛"} 第 ${i + 1} 組</span>`).join("")}</div>
+        ${s.state === "locked" ? `<div class="muted" style="font-size:.7em;margin-top:.6em">已停止配對，等待公布分組</div>` : ""}`;
+    } else {
+      inner = `<div class="muted">🎴 等老師派題卡…</div>`;
+    }
+    body = `<div class="s-prompt">${esc(a.prompt)}</div>${inner}
+      ${revealed && s.reveal?.explanation ? `<div class="s-explain">${esc(s.reveal.explanation)}</div>` : ""}`;
   } else {
     // question
     const revealed = s.state === "revealed";
